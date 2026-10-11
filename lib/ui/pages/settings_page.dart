@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import '../design_tokens.dart';
+import '../widgets/tv_focus.dart'; // ====【新增/TV 遥控器焦点】====
+import '../widgets/tv_controls.dart'; // ====【新增/Android TV 遥控器适配】====
 import 'package:flutter/services.dart';
 
 import '../../config/app_config.dart';
@@ -9,8 +11,12 @@ import '../../controllers/player_controller.dart';
 import '../../controllers/theme_controller.dart';
 import '../../controllers/local_music_controller.dart';
 import '../../services/app_update_service.dart';
+import '../../services/cache_diag_logger.dart'; // ====【诊断/缓存清理卡顿】====
 import '../../services/cache_service.dart';
 import '../../services/music_api.dart';
+import '../../services/desktop_controller.dart';
+import '../../services/loudness_gain_policy.dart'; // ====【新增/响度归一化】目标响度档位枚举 ====
+import '../../services/loudness_normalization.dart'; // ====【响应"清理响度缓存后重置标记"】====
 import '../widgets/audio_effects_sheet.dart';
 import '../widgets/audio_quality_sheet.dart';
 import '../widgets/toast.dart';
@@ -113,6 +119,16 @@ class SettingsPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器适配】==== 页面级焦点作用域：
+    //   * 进入页面后焦点落到第一个可聚焦组件；
+    //   * 离开再回来恢复上次位置（debugLabel 作为记忆键）。
+    return TvFocusScope(
+      debugLabel: 'settings',
+      child: _buildSettingsInner(context),
+    );
+  }
+
+  Widget _buildSettingsInner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
@@ -133,6 +149,7 @@ class SettingsPage extends StatelessWidget {
             player,
             ?localMusic,
             theme,
+            DesktopController.instance,
           ]),
           builder: (context, _) {
             return AdaptiveContentPadding(
@@ -170,6 +187,35 @@ class SettingsPage extends StatelessWidget {
                       onTap: auth.isLoading
                           ? null
                           : () => _confirmLogout(context),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 24),
+                // ===== 模式分类（横屏/车机，置于账号与播放之间）=====
+                // ===== 原实现（备份，供回退）：本分类原含"性能模式"总开关与
+                // "性能模式下恢复旋转动画"，已删除并迁移至下方"性能"分类。=====
+                _SectionHeader(title: '模式'),
+                const SizedBox(height: 8),
+                _SettingsCard(
+                  children: [
+                    _SettingsSwitchTile(
+                      icon: Icons.screen_rotation_rounded,
+                      iconColor: colorScheme.primary,
+                      title: '横屏模式',
+                      subtitle: '允许手机横屏时自动旋转（平板默认开启）',
+                      value: theme.landscapeEnabled,
+                      onChanged: (value) {
+                        theme.setLandscapeEnabled(value, AdaptiveLayout.isTablet(context));
+                      },
+                    ),
+                    _SettingsDivider(),
+                    _SettingsSwitchTile(
+                      icon: Icons.directions_car_rounded,
+                      iconColor: colorScheme.primary,
+                      title: '车机模式',
+                      subtitle: '横屏时使用左侧播放面板布局并放大文字',
+                      value: theme.carModeEnabled,
+                      onChanged: (value) => theme.setCarModeEnabled(value),
                     ),
                   ],
                 ),
@@ -217,10 +263,42 @@ class SettingsPage extends StatelessWidget {
                     _SettingsSwitchTile(
                       icon: Icons.volume_up_rounded,
                       iconColor: colorScheme.primary,
-                      title: '音量均衡',
-                      subtitle: '降低各首歌曲音量差异，自动控制音量',
+                      // ====【响度归一化】==== 原文案为「音量均衡 / 降低各首歌曲音量差异，
+                      // 自动控制音量」，对应的是曲内动态压缩方案（已废弃不调用）。
+                      // 新方案为按曲目响度施加固定增益偏移（业界标准做法，完整保留动态，双端生效）。
+                      title: '响度归一化',
+                      subtitle: '让所有歌听感音量一致，完整保留歌曲动态',
                       value: player.volumeNormalizationEnabled,
                       onChanged: player.setVolumeNormalizationEnabled,
+                    ),
+                    _SettingsDivider(),
+                    // ====【响度归一化】目标响度档位（响亮/标准/安静），仅开关开启时有实际作用。
+                    _SettingsTile(
+                      icon: Icons.tune_rounded,
+                      iconColor: colorScheme.primary,
+                      title: '目标响度',
+                      subtitle:
+                          '${player.loudnessTarget.label} · ${player.loudnessTarget.description}',
+                      onTap: () => _selectLoudnessTarget(context),
+                    ),
+                    _SettingsDivider(),
+                    // ====【响度归一化·预分析】默认关闭：默认占用后台 CPU/带宽（在线歌需下载）。
+                    _SettingsSwitchTile(
+                      icon: Icons.bolt_rounded,
+                      iconColor: colorScheme.primary,
+                      title: '预分析歌曲',
+                      subtitle: '后台提前分析队列歌曲，切歌时音量立即生效（占用后台资源）',
+                      value: player.loudnessPrescanEnabled,
+                      onChanged: player.setLoudnessPrescanEnabled,
+                    ),
+                    _SettingsDivider(),
+                    _SettingsSwitchTile(
+                      icon: Icons.skip_next_rounded,
+                      iconColor: colorScheme.primary,
+                      title: '自动跳过无法播放的歌曲',
+                      subtitle: '播放卡死(零进度约 8 秒)时自动切到下一首',
+                      value: player.autoSkipUnplayable,
+                      onChanged: player.setAutoSkipUnplayable,
                     ),
                     _SettingsDivider(),
                     _SettingsTile(
@@ -316,6 +394,50 @@ class SettingsPage extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 24),
+                // ===== 【重构】性能分类（置于播放与网络之间）=====
+                // 原"性能模式"总开关拆分为 4 个独立开关，迁移至此分类。
+                _SectionHeader(title: '性能'),
+                const SizedBox(height: 8),
+                _SettingsCard(
+                  children: [
+                    _SettingsSwitchTile(
+                      icon: Icons.blur_off_rounded,
+                      iconColor: colorScheme.primary,
+                      title: '关闭歌词模糊',
+                      subtitle: '关闭歌词高斯模糊效果，降低 GPU 占用',
+                      value: player.perfLyricBlurOff,
+                      onChanged: player.setPerfLyricBlurOff,
+                    ),
+                    _SettingsDivider(),
+                    _SettingsSwitchTile(
+                      icon: Icons.image_not_supported_rounded,
+                      iconColor: colorScheme.primary,
+                      title: '关闭背景动画',
+                      subtitle: '关闭播放器页背景旋转动画',
+                      value: player.perfBgAnimOff,
+                      onChanged: player.setPerfBgAnimOff,
+                    ),
+                    _SettingsDivider(),
+                    _SettingsSwitchTile(
+                      icon: Icons.album_rounded,
+                      iconColor: colorScheme.primary,
+                      title: '关闭封面动画',
+                      subtitle: '关闭车机封面旋转动画',
+                      value: player.perfCoverAnimOff,
+                      onChanged: player.setPerfCoverAnimOff,
+                    ),
+                    _SettingsDivider(),
+                    _SettingsSwitchTile(
+                      icon: Icons.bolt_rounded,
+                      iconColor: colorScheme.primary,
+                      title: '轻量歌词',
+                      subtitle: '歌词改用自绘整行高亮、仅行切换刷新，降低 GPU 占用',
+                      value: player.perfLightLyric,
+                      onChanged: player.setPerfLightLyric,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 24),
                 // Network section
                 _SectionHeader(title: '网络'),
                 const SizedBox(height: 8),
@@ -348,6 +470,39 @@ class SettingsPage extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 24),
+                // Desktop section (Windows)
+                if (DesktopController.instance.isSupported) ...[
+                  _SectionHeader(title: '桌面'),
+                  const SizedBox(height: 8),
+                  _SettingsCard(
+                    children: [
+                      _SettingsSwitchTile(
+                        icon: Icons.window_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '关闭窗口时收进托盘',
+                        subtitle: '关闭按钮隐藏到系统托盘，不退出程序',
+                        value: DesktopController.instance.closeBehavior ==
+                            CloseBehavior.hideToTray,
+                        onChanged: (value) =>
+                            DesktopController.instance.setCloseBehavior(
+                          value
+                              ? CloseBehavior.hideToTray
+                              : CloseBehavior.quit,
+                        ),
+                      ),
+                      _SettingsDivider(),
+                      _SettingsSwitchTile(
+                        icon: Icons.power_settings_new_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '开机自动启动',
+                        subtitle: '登录 Windows 后自动启动 KA Music',
+                        value: DesktopController.instance.launchAtStartup,
+                        onChanged: DesktopController.instance.setLaunchAtStartup,
+                      ),
+                    ],
+                  ),
+                ],
+                const SizedBox(height: 24),
                 // Personalization section
                 _SectionHeader(title: '个性化'),
                 const SizedBox(height: 8),
@@ -373,26 +528,6 @@ class SettingsPage extends StatelessWidget {
                       title: '字体大小',
                       subtitle: _fontScaleLabel(theme.fontScale),
                       onTap: () => _selectFontScale(context, theme),
-                    ),
-                    _SettingsDivider(),
-                    _SettingsSwitchTile(
-                      icon: Icons.screen_rotation_rounded,
-                      iconColor: colorScheme.primary,
-                      title: '横屏模式',
-                      subtitle: '允许手机横屏时自动旋转（平板默认开启）',
-                      value: theme.landscapeEnabled,
-                      onChanged: (value) {
-                        theme.setLandscapeEnabled(value, AdaptiveLayout.isTablet(context));
-                      },
-                    ),
-                    _SettingsDivider(),
-                    _SettingsSwitchTile(
-                      icon: Icons.directions_car_rounded,
-                      iconColor: colorScheme.primary,
-                      title: '车机模式',
-                      subtitle: '横屏时使用左侧播放面板布局并放大文字',
-                      value: theme.carModeEnabled,
-                      onChanged: (value) => theme.setCarModeEnabled(value),
                     ),
                   ],
                 ),
@@ -442,6 +577,33 @@ class SettingsPage extends StatelessWidget {
     );
     if (quality == null) return;
     await player.setAudioQuality(quality);
+  }
+
+  /// ====【新增/响度归一化】目标响度三档选择 ====
+  ///
+  /// 三档对应主流流媒体平台的参考值（−11 / −14 / −19 LUFS）：
+  ///   响亮 = 嘈杂环境（车载/户外）；标准 = 与主流平台一致；安静 = 夜深人静。
+  Future<void> _selectLoudnessTarget(BuildContext context) async {
+    final selected = await showDialog<LoudnessTarget>(
+      context: context,
+      builder: (dialogContext) {
+        return SimpleDialog(
+          title: const Text('目标响度'),
+          children: [
+            for (final target in LoudnessTarget.values)
+              RadioListTile<LoudnessTarget>(
+                value: target,
+                groupValue: player.loudnessTarget,
+                title: Text('${target.label}（${target.lufs.toStringAsFixed(0)} LUFS）'),
+                subtitle: Text(target.description),
+                onChanged: (value) => Navigator.of(dialogContext).pop(value),
+              ),
+          ],
+        );
+      },
+    );
+    if (selected == null) return;
+    await player.setLoudnessTarget(selected);
   }
 
   /// 打开缓存管理 BottomSheet。
@@ -629,6 +791,18 @@ class _SettingsTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.md,
+        child: _buildSettingsTileInner(context),
+      ),
+    );
+  }
+
+  Widget _buildSettingsTileInner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return InkWell(
       onTap: onTap,
@@ -705,7 +879,10 @@ class _SettingsSwitchTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    return Padding(
+    return TvTapArea(
+      radius: AppRadius.md,
+      onTap: () => onChanged(!value),
+      child: Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       child: Row(
         children: [
@@ -739,7 +916,7 @@ class _SettingsSwitchTile extends StatelessWidget {
           Switch(value: value, onChanged: onChanged),
         ],
       ),
-    );
+    ));
   }
 }
 
@@ -769,6 +946,9 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
   int? _dataCacheSize;
   int? _downloadSize;
   int? _playCacheSize;
+  // ====【新增/响度缓存改为手动清理】====
+  int? _loudnessCacheSize;
+  int? _loudnessCacheCount;
   bool _clearing = false;
 
   @override
@@ -778,25 +958,57 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
   }
 
   Future<void> _loadSizes() async {
+    // ====【诊断/缓存清理卡顿】==== 打开「缓存管理」时逐项统计耗时（含同步目录扫描）。
+    final sw = Stopwatch()..start();
     int? dataCache, download, playCache;
+    int? loudnessSize;
+    int? loudnessCount;
+    final stageMs = <String, int>{};
     if (widget.cache != null) {
       try {
+        final s = Stopwatch()..start();
         dataCache = await widget.cache!.getCacheSize();
+        s.stop();
+        stageMs['dataCache'] = s.elapsedMilliseconds;
+      } catch (_) {}
+      try {
+        // 响度分析缓存单独统计（它已被排除在"数据缓存"的总量之外）
+        final stats = await widget.cache!.prefixStats(
+          CacheService.loudnessCachePrefix,
+        );
+        loudnessSize = stats.bytes;
+        loudnessCount = stats.count;
       } catch (_) {}
     }
     if (widget.downloads != null) {
       try {
+        final s = Stopwatch()..start();
         download = await widget.downloads!.getDownloadDirSize();
+        s.stop();
+        stageMs['downloadDir'] = s.elapsedMilliseconds;
       } catch (_) {}
       try {
+        final s = Stopwatch()..start();
         playCache = await widget.downloads!.getPlayCacheDirSize();
+        s.stop();
+        stageMs['playCacheDir'] = s.elapsedMilliseconds;
       } catch (_) {}
     }
+    sw.stop();
+    CacheDiagLogger.log(
+      'ui.cacheManagementSheet',
+      'dataCache=${stageMs['dataCache'] ?? -1}ms '
+      'downloadDir=${stageMs['downloadDir'] ?? -1}ms '
+      'playCacheDir=${stageMs['playCacheDir'] ?? -1}ms',
+      ms: sw.elapsedMilliseconds,
+    );
     if (mounted) {
       setState(() {
         _dataCacheSize = dataCache;
         _downloadSize = download;
         _playCacheSize = playCache;
+        _loudnessCacheSize = loudnessSize;
+        _loudnessCacheCount = loudnessCount;
       });
     }
   }
@@ -913,6 +1125,45 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
                         await _loadSizes();
                         if (mounted) {
                           Toast.success('数据缓存已清理');
+                        }
+                      } catch (_) {
+                        if (mounted) {
+                          Toast.error('清理失败');
+                        }
+                      }
+                      if (mounted) {
+                        setState(() => _clearing = false);
+                      }
+                    }
+                  : null,
+            ),
+            const SizedBox(height: 10),
+            // ====【新增/响度缓存改为手动清理】====
+            // 响度分析结果（每首歌一条，约 200 字节）已从"数据缓存"的总量中排除，
+            // 避免一键清理时把"算力换来的结果"误清掉（清理后所有歌都要重新分析）。
+            // 是否需要清理交给用户自行决定。
+            _CacheItem(
+              icon: Icons.graphic_eq_rounded,
+              title: '响度分析缓存',
+              size: _loudnessCacheCount != null && _loudnessCacheCount! > 0
+                  ? '${_formatSize(_loudnessCacheSize)} · $_loudnessCacheCount 首'
+                  : _formatSize(_loudnessCacheSize),
+              onClear:
+                  widget.cache != null &&
+                      _loudnessCacheCount != null &&
+                      _loudnessCacheCount! > 0
+                  ? () async {
+                      setState(() => _clearing = true);
+                      try {
+                        await widget.cache!.removeByPrefix(
+                          CacheService.loudnessCachePrefix,
+                        );
+                        // ====【响度归一化】通知编排层重置"已处理"标记与内存缓存，
+                        // 否则预扫描仍认为这些歌已分析，不会重新生成缓存。
+                        LoudnessNormalization.onLoudnessCacheCleared();
+                        await _loadSizes();
+                        if (mounted) {
+                          Toast.success('响度分析缓存已清理（相关歌曲会重新分析）');
                         }
                       } catch (_) {
                         if (mounted) {

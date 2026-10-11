@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../widgets/app_section.dart';
 import '../design_tokens.dart';
+import '../widgets/tv_focus.dart'; // ====【新增/TV 遥控器焦点】====
 
 import '../../controllers/auth_controller.dart';
 import '../../controllers/player_controller.dart';
@@ -206,6 +207,16 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器适配】==== 页面级焦点作用域：
+    //   * 进入页面后焦点落到第一个可聚焦组件；
+    //   * 离开再回来恢复上次位置（debugLabel 作为记忆键）。
+    return TvFocusScope(
+      debugLabel: 'artistDetail',
+      child: _buildArtistInner(context),
+    );
+  }
+
+  Widget _buildArtistInner(BuildContext context) {
     final bottomInset = MediaQuery.paddingOf(context).bottom;
     // MiniPlayer 高度约 64，距底部 16，合计预留空间防止遮挡最后一首歌
     final miniPlayerSpace = bottomInset + 64 + 16;
@@ -478,6 +489,18 @@ class _ArtistAlbumCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.md,
+        child: _buildArtistAlbumCardInner(context),
+      ),
+    );
+  }
+
+  Widget _buildArtistAlbumCardInner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return InkWell(
       onTap: onTap,
@@ -567,6 +590,18 @@ class _ArtistSongRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.md,
+        child: _buildArtistSongRowInner(context),
+      ),
+    );
+  }
+
+  Widget _buildArtistSongRowInner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
     return AnimatedBuilder(

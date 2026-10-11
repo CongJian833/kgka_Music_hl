@@ -6,6 +6,8 @@ import '../../models/music_models.dart';
 import '../pages/player_page.dart';
 import 'artwork.dart';
 import 'toast.dart';
+import 'tv_focus.dart'; // ====【新增/Android TV 遥控器适配】====
+import 'tv_controls.dart'; // ====【新增/Android TV 遥控器适配】====
 
 class CarLeftPlayerPanel extends StatelessWidget {
   const CarLeftPlayerPanel({
@@ -108,9 +110,10 @@ class CarLeftPlayerPanel extends StatelessWidget {
                 children: [
                   _buildHeader(context, colorScheme),
                   const Spacer(),
-                  // Album Art
+                  // Album Art（TV：可聚焦，确定键进入播放页）
                   Center(
-                    child: GestureDetector(
+                    child: TvTapArea(
+                      radius: AppRadius.lg,
                       onTap: () => Navigator.of(context).push(
                         MaterialPageRoute(
                           builder: (_) => PlayerPage(player: player, auth: auth),
@@ -379,10 +382,13 @@ class CarLeftPlayerPanel extends StatelessWidget {
       backgroundColor: Theme.of(context).colorScheme.surface,
       builder: (sheetContext) {
         final colorScheme = Theme.of(sheetContext).colorScheme;
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
-            child: Column(
+      return TvFocusScope(
+        restoreFocus: false,
+        debugLabel: 'carQueueSheet',
+        child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+          child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -481,11 +487,11 @@ class CarLeftPlayerPanel extends StatelessWidget {
                 ),
               ],
             ),
-          ),
-        );
-      },
-    );
-  }
+        ),
+      ));
+    },
+  );
+}
 
   String _formatDuration(Duration d) {
     if (d == Duration.zero) return '00:00';

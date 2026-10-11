@@ -9,6 +9,8 @@ import '../../controllers/theme_controller.dart';
 import '../../models/music_models.dart';
 import 'artwork.dart';
 import 'toast.dart';
+import 'tv_focus.dart'; // ====【新增/Android TV 遥控器适配】====
+import 'tv_controls.dart'; // ====【新增/Android TV 遥控器适配】====
 
 class SongSheetAction {
   const SongSheetAction({
@@ -61,7 +63,11 @@ Future<void> showSongActionSheet({
                 ),
               ],
             ),
-            child: _buildCarActionDialogContent(context, song, actions),
+            child: TvFocusScope(
+              restoreFocus: false,
+              debugLabel: 'songActionSheet',
+              child: _buildCarActionDialogContent(context, song, actions),
+            ),
           ),
         );
       },
@@ -86,7 +92,10 @@ Future<void> showSongActionSheet({
     backgroundColor: Theme.of(context).colorScheme.surface,
     builder: (sheetContext) {
       final colorScheme = Theme.of(sheetContext).colorScheme;
-      return SafeArea(
+      return TvFocusScope(
+        restoreFocus: false,
+        debugLabel: 'songActionSheet',
+        child: SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
           child: SingleChildScrollView(
@@ -179,7 +188,7 @@ Future<void> showSongActionSheet({
             ),
           ),
         ),
-      );
+      ));
     },
   );
 }
@@ -194,8 +203,8 @@ class _GridItem extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
     final color = action.danger ? colorScheme.error : colorScheme.onSurface;
 
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
+    return TvTapArea(
+      radius: AppRadius.md,
       onTap: () {
         Navigator.of(context).pop();
         Future<void>.delayed(
@@ -259,7 +268,10 @@ Future<void> showAddToPlaylistSheet({
     backgroundColor: Theme.of(context).colorScheme.surface,
     builder: (sheetContext) {
       final colorScheme = Theme.of(sheetContext).colorScheme;
-      return SafeArea(
+      return TvFocusScope(
+        restoreFocus: false,
+        debugLabel: 'addToPlaylistSheet',
+        child: SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
           child: Column(
@@ -316,7 +328,7 @@ Future<void> showAddToPlaylistSheet({
             ],
           ),
         ),
-      );
+      ));
     },
   );
 
@@ -454,48 +466,57 @@ class _CarGridActionItem extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
     final color = action.danger ? colorScheme.error : colorScheme.onSurface;
 
-    return Material(
-      color: colorScheme.surfaceContainer,
-      borderRadius: BorderRadius.circular(AppRadius.lg),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: () {
-          Navigator.of(context).pop();
-          Future<void>.delayed(
-            const Duration(milliseconds: 120),
-            () => action.onTap(),
-          );
-        },
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(action.icon, color: color, size: 22),
-              const SizedBox(height: 6),
-              Text(
-                action.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: color,
-                  fontWeight: FontWeight.w700,
-                  fontSize: 12,
-                ),
-              ),
-              if (action.subtitle != null)
-                Text(
-                  action.subtitle!,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                    fontSize: 9,
+    void handleTap() {
+      Navigator.of(context).pop();
+      Future<void>.delayed(
+        const Duration(milliseconds: 120),
+        () => action.onTap(),
+      );
+    }
+
+    return TvFocusTarget(
+      onSelect: handleTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.lg,
+        child: Material(
+          color: colorScheme.surfaceContainer,
+          borderRadius: BorderRadius.circular(AppRadius.lg),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: handleTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(action.icon, color: color, size: 22),
+                  const SizedBox(height: 6),
+                  Text(
+                    action.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: color,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12,
+                    ),
                   ),
-                ),
-            ],
+                  if (action.subtitle != null)
+                    Text(
+                      action.subtitle!,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                        fontSize: 9,
+                      ),
+                    ),
+                ],
+              ),
+            ),
           ),
         ),
       ),

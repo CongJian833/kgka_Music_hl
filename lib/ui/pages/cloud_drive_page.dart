@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../widgets/app_feedback.dart';
 import '../design_tokens.dart';
+import '../widgets/tv_focus.dart'; // ====【新增/TV 遥控器焦点】====
 
 import '../../controllers/auth_controller.dart';
 import '../../controllers/player_controller.dart';
@@ -153,6 +154,16 @@ class _CloudDrivePageState extends State<CloudDrivePage> {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器适配】==== 页面级焦点作用域：
+    //   * 进入页面后焦点落到第一个可聚焦组件；
+    //   * 离开再回来恢复上次位置（debugLabel 作为记忆键）。
+    return TvFocusScope(
+      debugLabel: 'cloudDrive',
+      child: _buildCloudInner(context),
+    );
+  }
+
+  Widget _buildCloudInner(BuildContext context) {
     final bottomInset = MediaQuery.paddingOf(context).bottom;
 
     return Scaffold(
@@ -437,6 +448,18 @@ class _CloudSongRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.md,
+        child: _buildCloudSongRowInner(context),
+      ),
+    );
+  }
+
+  Widget _buildCloudSongRowInner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
     return AnimatedBuilder(

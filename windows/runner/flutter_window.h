@@ -3,6 +3,7 @@
 
 #include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
+#include <flutter/method_channel.h>
 
 #include <memory>
 
@@ -28,6 +29,11 @@ class FlutterWindow : public Win32Window {
 
   // The Flutter instance hosted by this window.
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
+
+  // Pushes native window state (maximize/restore/fullscreen transitions, etc.)
+  // to the Dart layer so the custom title bar's button stays in sync.
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      window_state_channel_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

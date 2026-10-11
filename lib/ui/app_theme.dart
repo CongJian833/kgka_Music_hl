@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'design_tokens.dart';
+import 'widgets/tv_focus.dart'; // ====【新增/Android TV 遥控器适配】焦点环常量 ====
 
 class AppTheme {
   static const blue = Color(0xFF1478FF);
@@ -51,6 +52,12 @@ class AppTheme {
     return ThemeData(
       useMaterial3: true,
       colorScheme: scheme,
+      // ====【新增/Android TV 遥控器适配】==== 全局焦点/悬停/按下高亮色。
+      // 未被 TV 焦点环包住的 Material 控件（ListTile / IconButton / Switch /
+      // RadioListTile 等）也会因此获得清晰可见的遥控器焦点反馈。
+      focusColor: scheme.primary.withValues(alpha: .26),
+      hoverColor: scheme.primary.withValues(alpha: .08),
+      highlightColor: scheme.primary.withValues(alpha: .12),
       scaffoldBackgroundColor: transparentBackground
           ? Colors.transparent
           : (isDark ? const Color(0xFF06070A) : Colors.white),
@@ -84,8 +91,41 @@ class AppTheme {
         foregroundColor: scheme.onSurface,
       ),
       iconButtonTheme: IconButtonThemeData(
-        style: IconButton.styleFrom(
-          highlightColor: scheme.primary.withValues(alpha: .08),
+        style: ButtonStyle(
+          overlayColor: WidgetStatePropertyAll(
+            scheme.primary.withValues(alpha: .08),
+          ),
+          shape: WidgetStatePropertyAll(
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+          // ====【新增/Android TV 遥控器适配】==== 遥控器焦点落到 IconButton 时
+          // 画出明显的描边环（全局生效，无需逐个改造页面里的 IconButton）。
+          side: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return BorderSide(
+                color: scheme.primary,
+                width: TvFocusMode.highlightBorderWidth,
+              );
+            }
+            return BorderSide.none;
+          }),
+        ),
+      ),
+      // 文本按钮 / 填充按钮同样补上聚焦描边，保证遥控器焦点始终可见。
+      textButtonTheme: TextButtonThemeData(
+        style: ButtonStyle(
+          shape: WidgetStatePropertyAll(
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+          side: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return BorderSide(
+                color: scheme.primary,
+                width: TvFocusMode.highlightBorderWidth,
+              );
+            }
+            return BorderSide.none;
+          }),
         ),
       ),
       cardTheme: CardThemeData(

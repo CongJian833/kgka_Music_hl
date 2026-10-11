@@ -4,7 +4,9 @@ publish_to: 'none'
 version: 2.6.0
 
 environment:
-  sdk: ^3.11.5
+  # 原 ^3.11.5（需 Flutter 3.47+，引擎不支持 API<24）。
+  # 为兼容安卓5.1降级到 Flutter 3.32.8（自带 Dart 3.8.x）。
+  sdk: ^3.8.0
 
 dependencies:
   flutter:
@@ -14,23 +16,40 @@ dependencies:
   http: ^1.5.0
   just_audio: ^0.10.4
   just_audio_windows: ^0.2.3
+  # ====【正式迁移/Windows 音频后端】BASS+BASS_FX（PoC 验证后采用）：
+  # Windows 播放已切 bass_engine.dart（DLL 走 CMake 安装，非 pub 依赖）。
+  # flutter_soloud 已移除（PoC 对比后弃用，其变调失真；如需回退见 backups）。====
+  # ====【需求/PoC·BASS FFI 绑定】显式声明 ffi（传递依赖不可靠，绑定需直接 import）====
+  ffi: ^2.1.0
   shared_preferences: ^2.5.3
   url_launcher: ^6.3.2
   dio: ^5.7.0
   path_provider: ^2.1.5
   image_picker: ^1.1.2
-  file_picker: ^12.0.0
+  # 原 ^12.0.0 需 Dart>=3.10，Flutter 3.32.8 (Dart 3.8) 下降级为 ^11.0.3
+  file_picker: ^11.0.3
   flutter_lyric: ^3.0.7
   permission_handler: ^13.0.1
   lpinyin: ^2.0.3
+  window_manager: ^0.5.2
+  tray_manager: ^0.5.3
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
 
+# permission_handler_android 14.x 的构建脚本面向 AGP 9 / Kotlin 2.3.20，
+# 与当前工具链（Gradle 8.14 + AGP 8.11.1 + Kotlin 2.2.20，Flutter 3.32.8）不兼容，
+# 收窄到与主包 permission_handler 13.x 同代发布的 Android 实现。
+dependency_overrides:
+  permission_handler_android: ^13.0.1
+  tray_manager:
+    path: third_party/tray_manager
+
 flutter:
   uses-material-design: true
   assets:
     - update.md
     - lib/assets/logo.png
+    - lib/assets/tray_icon.ico

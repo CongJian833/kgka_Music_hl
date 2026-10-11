@@ -1,5 +1,9 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import '../design_tokens.dart';
+import '../widgets/tv_focus.dart'; // ====【新增/TV 遥控器焦点】====
 
 import '../../controllers/auth_controller.dart';
 import '../../controllers/download_controller.dart';
@@ -17,6 +21,7 @@ import 'settings_page.dart';
 import 'local_songs_page.dart';
 import '../../controllers/local_music_controller.dart';
 import '../../core/pinyin_utils.dart';
+import '../widgets/window_title_bar.dart';
 
 class LibraryPage extends StatefulWidget {
   const LibraryPage({
@@ -111,6 +116,16 @@ class _LibraryPageState extends State<LibraryPage>
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器适配】==== 页面级焦点作用域：
+    //   * 进入页面后焦点落到第一个可聚焦组件；
+    //   * 离开再回来恢复上次位置（debugLabel 作为记忆键）。
+    return TvFocusScope(
+      debugLabel: 'library',
+      child: _buildLibraryInner(context),
+    );
+  }
+
+  Widget _buildLibraryInner(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return Stack(
       children: [
@@ -156,7 +171,16 @@ class _LibraryPageState extends State<LibraryPage>
                   // Header
                   SliverToBoxAdapter(
                     child: Padding(
-                      padding: const EdgeInsets.fromLTRB(18, 14, 12, 0),
+                      // Windows 上右侧为窗口控制按钮让出空间（仅顶部这一行 header）。
+                      padding: EdgeInsets.fromLTRB(
+                        18,
+                        14,
+                        12 +
+                            (Platform.isWindows
+                                ? WindowTitleBar.controlAreaRight
+                                : 0),
+                        0,
+                      ),
                       child: Row(
                         children: [
                           Expanded(
@@ -373,10 +397,15 @@ class _QuickActionRow extends StatelessWidget {
             AnimatedBuilder(
               animation: localMusic,
               builder: (context, _) {
+                // ====【修复/安卓冷启动卡顿】==== 扫描已改为惰性：这里首次构建时才触发，
+                // 不再拖慢应用冷启动（该设备本地歌曲为 0 首，原先每次白花约 1 秒）。
+                unawaited(localMusic.ensureInitialized());
                 return _QuickActionCard(
                   icon: Icons.computer_rounded,
                   iconColor: const Color.fromARGB(200, 76, 175, 80),
-                  subtitle: '${localMusic.songs.length} 首歌曲',
+                  subtitle: localMusic.isScanning
+                      ? '扫描中…'
+                      : '${localMusic.songs.length} 首歌曲',
                   title: '本地',
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute(
@@ -429,6 +458,18 @@ class _QuickActionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.md,
+        child: _buildQuickActionCardInner(context),
+      ),
+    );
+  }
+
+  Widget _buildQuickActionCardInner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
     return Container(
@@ -561,6 +602,18 @@ class _TabItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.md,
+        child: _buildTabItemInner(context),
+      ),
+    );
+  }
+
+  Widget _buildTabItemInner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
     return GestureDetector(
@@ -913,6 +966,18 @@ class _SortOptionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.md,
+        child: _buildSortOptionTileInner(context),
+      ),
+    );
+  }
+
+  Widget _buildSortOptionTileInner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return InkWell(
       onTap: onTap,
@@ -1132,6 +1197,18 @@ class _PlaylistRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.md,
+        child: _buildPlaylistRowInner(context),
+      ),
+    );
+  }
+
+  Widget _buildPlaylistRowInner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return InkWell(
       onTap: onTap,

@@ -1,4 +1,4 @@
-import 'dart:ui';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import '../design_tokens.dart';
@@ -13,6 +13,10 @@ import '../../services/cache_service.dart';
 import '../../services/music_api.dart';
 import '../widgets/mini_player.dart';
 import '../widgets/car_left_player_panel.dart';
+import '../widgets/window_title_bar.dart';
+import '../widgets/tv_focus.dart'; // ====【新增/Android TV 遥控器适配】====
+import '../widgets/tv_nav_bar.dart'; // ====【新增/Android TV 遥控器适配】====
+import '../widgets/tv_controls.dart'; // ====【新增/Android TV 遥控器适配】====
 import '../adaptive_layout.dart';
 import 'home_page.dart';
 import 'library_page.dart';
@@ -47,6 +51,11 @@ class _AppShellState extends State<AppShell> {
   var _index = 1; // Default to '推荐' tab (index 1) in landscape
   var _lastHomeTab = 1; // Tracks the last active Home sub-tab (1 for Recommend, 2 for Radio)
   final _navigatorKey = GlobalKey<NavigatorState>();
+  // ====【新增/Android TV 遥控器适配】====
+  // 车机布局里，左侧播放面板在嵌套 Navigator 之外、内容是 Navigator 内的一条路由，
+  // 二者处于**不同的 FocusScope**，方向键无法互跨。用两个锚点做跨作用域桥接。
+  final _carPanelKey = GlobalKey();
+  final _carContentKey = GlobalKey();
 
   int _getPortraitIndex() {
     return _index == 0 ? 1 : 0;
@@ -100,18 +109,23 @@ class _AppShellState extends State<AppShell> {
             }
           },
           child: Scaffold(
-            body: Row(
+            body: _CarFocusBridge(
+              panelKey: _carPanelKey,
+              contentKey: _carContentKey,
+              child: Row(
               children: [
                 // ExcludeSemantics 规避 CarLeftPlayerPanel 频繁响应 player 更新
                 // 导致的 Windows AXTree 竞态崩溃（Flutter Windows 引擎 bug）
                 ExcludeSemantics(
                   child: CarLeftPlayerPanel(
+                    key: _carPanelKey,
                     player: widget.player,
                     auth: widget.auth,
                   ),
                 ),
                 const VerticalDivider(width: 1, thickness: 1),
                 Expanded(
+                  key: _carContentKey,
                   child: Navigator(
                     key: _navigatorKey,
                     onGenerateRoute: (settings) {
@@ -168,6 +182,7 @@ class _AppShellState extends State<AppShell> {
                   ),
                 ),
               ],
+            ),
             ),
           ),
         ),
@@ -229,33 +244,19 @@ class _AppShellState extends State<AppShell> {
     if (useNavRail) {
       mainContent = Row(
         children: [
-          NavigationRail(
-            selectedIndex: portraitIndex,
-            onDestinationSelected: _setPortraitIndex,
-            backgroundColor: colorScheme.surfaceContainerLow,
-            labelType: NavigationRailLabelType.all,
-            selectedIconTheme: IconThemeData(color: colorScheme.primary),
-            unselectedIconTheme: IconThemeData(
-              color: colorScheme.onSurfaceVariant,
-            ),
-            selectedLabelTextStyle: TextStyle(
-              color: colorScheme.primary,
-              fontWeight: FontWeight.w800,
-            ),
-            unselectedLabelTextStyle: TextStyle(
-              color: colorScheme.onSurfaceVariant,
-              fontWeight: FontWeight.w600,
-            ),
+          TvNavRail(
+            currentIndex: portraitIndex,
+            onSelect: _setPortraitIndex,
             destinations: const [
-              NavigationRailDestination(
-                icon: Icon(Icons.home_outlined),
-                selectedIcon: Icon(Icons.home_rounded),
-                label: Text('首页'),
+              TvNavDestination(
+                icon: Icons.home_outlined,
+                activeIcon: Icons.home_rounded,
+                label: '首页',
               ),
-              NavigationRailDestination(
-                icon: Icon(Icons.person_outline_rounded),
-                selectedIcon: Icon(Icons.person_rounded),
-                label: Text('我的'),
+              TvNavDestination(
+                icon: Icons.person_outline_rounded,
+                activeIcon: Icons.person_rounded,
+                label: '我的',
               ),
             ],
           ),
@@ -270,54 +271,21 @@ class _AppShellState extends State<AppShell> {
       body: AdaptiveContentPadding(child: mainContent),
       bottomNavigationBar: useNavRail
           ? null
-          : ClipRect(
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).brightness == Brightness.dark
-                        ? colorScheme.surfaceContainerHighest.withValues(
-                            alpha: .72,
-                          )
-                        : colorScheme.surfaceContainerHighest.withValues(
-                            alpha: .64,
-                          ),
-                    border: Border(
-                      top: BorderSide(
-                        color: colorScheme.outlineVariant.withValues(
-                          alpha: .38,
-                        ),
-                      ),
-                    ),
-                  ),
-                  child: BottomNavigationBar(
-                    currentIndex: portraitIndex,
-                    onTap: _setPortraitIndex,
-                    backgroundColor: Colors.transparent,
-                    elevation: 0,
-                    selectedItemColor: colorScheme.primary,
-                    unselectedItemColor: colorScheme.onSurface,
-                    selectedLabelStyle: const TextStyle(
-                      fontWeight: FontWeight.w800,
-                    ),
-                    unselectedLabelStyle: const TextStyle(
-                      fontWeight: FontWeight.w600,
-                    ),
-                    items: const [
-                      BottomNavigationBarItem(
-                        icon: Icon(Icons.home_outlined),
-                        activeIcon: Icon(Icons.home_rounded),
-                        label: '首页',
-                      ),
-                      BottomNavigationBarItem(
-                        icon: Icon(Icons.person_outline_rounded),
-                        activeIcon: Icon(Icons.person_rounded),
-                        label: '我的',
-                      ),
-                    ],
-                  ),
+          : TvBottomNavBar(
+              currentIndex: portraitIndex,
+              onSelect: _setPortraitIndex,
+              destinations: const [
+                TvNavDestination(
+                  icon: Icons.home_outlined,
+                  activeIcon: Icons.home_rounded,
+                  label: '首页',
                 ),
-              ),
+                TvNavDestination(
+                  icon: Icons.person_outline_rounded,
+                  activeIcon: Icons.person_rounded,
+                  label: '我的',
+                ),
+              ],
             ),
     );
   }
@@ -326,13 +294,20 @@ class _AppShellState extends State<AppShell> {
     final tabs = ['我的', '推荐', '电台'];
     final topInset = MediaQuery.paddingOf(context).top;
     return Container(
-      // 顶部加上状态栏高度，避免导航栏内容被状态栏遮挡
-      padding: EdgeInsets.fromLTRB(16, topInset, 16, 0),
+      // 顶部加上状态栏高度，避免导航栏内容被状态栏遮挡；
+      // Windows 上右端为窗口控制按钮让出空间，避免"设置"按钮与窗口按钮重叠。
+      padding: EdgeInsets.fromLTRB(
+        16,
+        topInset,
+        16 + (Platform.isWindows ? WindowTitleBar.controlAreaRight : 0),
+        0,
+      ),
       height: 72 + topInset, // Increased from 64
       child: Row(
         children: [
-          // Search Pill Button
-          GestureDetector(
+          // Search Pill Button（TV：可聚焦 + 确定键触发）
+          TvTapArea(
+            radius: AppRadius.xxl,
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(
                 builder: (_) => SearchPage(
@@ -372,7 +347,7 @@ class _AppShellState extends State<AppShell> {
             ),
           ),
           const SizedBox(width: 32), // Increased from 24
-          // Choice Chip Tabs
+          // Tabs（TV：可聚焦标签芯片，替代无法稳定聚焦的 ChoiceChip）
           Expanded(
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
@@ -380,55 +355,29 @@ class _AppShellState extends State<AppShell> {
                 children: [
                   for (final entry in tabs.indexed)
                     Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 10), // Increased from 6
-                      child: ChoiceChip(
-                        showCheckmark: false,
-                        label: Text(
-                          entry.$2,
-                          style: TextStyle(
-                            fontSize: 17, // Increased from default
-                            fontWeight: _index == entry.$1
-                                ? FontWeight.w900
-                                : FontWeight.w600,
-                          ),
-                        ),
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      child: TvChipButton(
+                        label: entry.$2,
                         selected: _index == entry.$1,
-                        onSelected: (selected) {
-                          if (selected) {
-                            setState(() {
-                              _index = entry.$1;
-                              if (entry.$1 == 1 || entry.$1 == 2) {
-                                _lastHomeTab = entry.$1;
-                              }
-                            });
+                        onTap: () => setState(() {
+                          _index = entry.$1;
+                          if (entry.$1 == 1 || entry.$1 == 2) {
+                            _lastHomeTab = entry.$1;
                           }
-                        },
-                        selectedColor: colorScheme.primary.withValues(
-                          alpha: 0.18,
-                        ),
-                        labelStyle: TextStyle(
-                          color: _index == entry.$1
-                              ? colorScheme.primary
-                              : colorScheme.onSurfaceVariant,
-                        ),
-                        backgroundColor: Colors.transparent,
-                        side: BorderSide.none,
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10), // Added explicit padding
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(AppRadius.md), // Added explicit shape for larger tap area
-                        ),
+                        }),
                       ),
                     ),
                 ],
               ),
             ),
           ),
-          // Settings Icon
-          IconButton(
+          // Settings Icon（TV：可聚焦图标按钮）
+          TvIconButton(
             tooltip: '设置',
-            iconSize: 28, // Increased iconSize from default (24)
-            icon: const Icon(Icons.settings_rounded),
-            onPressed: () {
+            icon: Icons.settings_rounded,
+            iconSize: 28,
+            padding: const EdgeInsets.all(10),
+            onTap: () {
               Navigator.of(context).push(
                 MaterialPageRoute(
                   builder: (_) => SettingsPage(
@@ -523,7 +472,12 @@ class _RelativeTextScaler extends TextScaler {
   String toString() => '$base × $multiplier';
 }
 
-/// 全局快捷键作用域（桌面端）：空格播放/暂停，左右键切歌。
+/// 全局快捷键作用域。
+///
+/// * 桌面端：空格播放/暂停，左右方向键切歌；
+/// * Android TV / 车机（[TvFocusMode.enabled] 为 true）：**左右方向键必须留给
+///   焦点遍历**，不能再绑成切歌，否则遥控器左右键只会切歌、控件焦点无法移动。
+///   TV 上的"上一首/下一首"由遥控器媒体键（见 [TvNavigationScope]）负责。
 class AppShortcutScope extends StatelessWidget {
   const AppShortcutScope({
     super.key,
@@ -536,14 +490,18 @@ class AppShortcutScope extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isTv = TvFocusMode.enabled;
     return Shortcuts(
       shortcuts: {
         const SingleActivator(LogicalKeyboardKey.space):
             const _PlayPauseIntent(),
-        const SingleActivator(LogicalKeyboardKey.arrowRight):
-            const _NextIntent(),
-        const SingleActivator(LogicalKeyboardKey.arrowLeft):
-            const _PreviousIntent(),
+        // 仅在桌面端把左右键设为切歌；TV 上让位给焦点遍历。
+        if (!isTv) ...{
+          const SingleActivator(LogicalKeyboardKey.arrowRight):
+              const _NextIntent(),
+          const SingleActivator(LogicalKeyboardKey.arrowLeft):
+              const _PreviousIntent(),
+        },
       },
       child: Actions(
         actions: {
@@ -585,4 +543,174 @@ class _NextIntent extends Intent {
 }
 class _PreviousIntent extends Intent {
   const _PreviousIntent();
+}
+
+/// ====【新增/Android TV 遥控器适配】====
+///
+/// 跨 FocusScope 的焦点桥接。
+///
+/// 车机布局中左侧播放面板与右侧内容分处两个 FocusScope，Flutter 的方向键遍历
+/// 只在**同一个 scope** 内工作，导致：
+///   * 内容区按左键，焦点**进不去**左侧面板；
+///   * 反之亦然。
+///
+/// 这里在车机布局外层拦一层 `Focus.onKeyEvent`（它比根部的默认方向键 Shortcuts
+/// 更靠近焦点，因此能先拿到按键）：
+///   * 内容区按左且**已无更左的可聚焦节点**时 → 把焦点交给左侧面板首个可聚焦项；
+///   * 左侧面板按右时 → 把焦点交回内容区上次聚焦的位置。
+/// 其余情况一律 `ignored`，交还框架默认的几何遍历，不改变既有顺序。
+class _CarFocusBridge extends StatefulWidget {
+  const _CarFocusBridge({
+    required this.panelKey,
+    required this.contentKey,
+    required this.child,
+  });
+
+  final GlobalKey panelKey;
+  final GlobalKey contentKey;
+  final Widget child;
+
+  @override
+  State<_CarFocusBridge> createState() => _CarFocusBridgeState();
+}
+
+class _CarFocusBridgeState extends State<_CarFocusBridge> {
+  FocusNode? _lastContentFocus;
+
+  @override
+  void initState() {
+    super.initState();
+    FocusManager.instance.addListener(_track);
+  }
+
+  @override
+  void dispose() {
+    FocusManager.instance.removeListener(_track);
+    super.dispose();
+  }
+
+  /// 记录内容区最近一次聚焦的节点，供"从面板按右键回来"时恢复。
+  void _track() {
+    if (!TvFocusMode.enabled) return;
+    try {
+      final f = FocusManager.instance.primaryFocus;
+      if (f != null && _isIn(f.context, widget.contentKey)) {
+        _lastContentFocus = f;
+      }
+    } catch (_) {
+      // 焦点跟踪属于增强功能，任何异常都不应影响主流程。
+    }
+  }
+
+  bool _isIn(BuildContext? ctx, GlobalKey key) {
+    final ancestor = key.currentContext;
+    if (ctx == null || ancestor == null) return false;
+    var found = false;
+    ctx.visitAncestorElements((el) {
+      if (identical(el, ancestor)) {
+        found = true;
+        return false;
+      }
+      return true;
+    });
+    return found;
+  }
+
+  FocusNode? _firstFocusable(BuildContext? ctx) {
+    if (ctx == null) return null;
+    FocusNode? found;
+    void visit(Element el) {
+      if (found != null) return;
+      final w = el.widget;
+      if (w is Focus && w.canRequestFocus != false) {
+        final n = w.focusNode;
+        if (n != null && n.canRequestFocus) {
+          found = n;
+          return;
+        }
+      }
+      el.visitChildren(visit);
+    }
+
+    (ctx as Element).visitChildren(visit);
+    return found;
+  }
+
+  /// 判断当前焦点节点在其 scope 内、其"正左侧"是否还存在可聚焦邻居。
+  /// 用于决定能否把左键交给默认遍历（有邻居）还是需要桥接到左侧面板（无邻居）。
+  bool _hasDirectLeftNeighbor(FocusNode f) {
+    try {
+      final scope = f.nearestScope;
+      final ro = f.context?.findRenderObject();
+      if (scope == null || ro is! RenderBox || !ro.hasSize) return false;
+      final myRect = ro.localToGlobal(Offset.zero) & ro.size;
+      for (final n in scope.traversalDescendants) {
+        if (identical(n, f)) continue;
+        final r = n.context?.findRenderObject();
+        if (r is! RenderBox || !r.hasSize) continue;
+        final rect = r.localToGlobal(Offset.zero) & r.size;
+        final vOverlap =
+            rect.top < myRect.bottom - 1 && rect.bottom > myRect.top + 1;
+        if (vOverlap && rect.right <= myRect.left + 1) return true;
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (!TvFocusMode.enabled) return KeyEventResult.ignored;
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final key = event.logicalKey;
+    final isLeft = key == LogicalKeyboardKey.arrowLeft;
+    final isRight = key == LogicalKeyboardKey.arrowRight;
+    if (!isLeft && !isRight) return KeyEventResult.ignored;
+
+    try {
+      final f = FocusManager.instance.primaryFocus;
+      if (f == null) return KeyEventResult.ignored;
+      final inPanel = _isIn(f.context, widget.panelKey);
+      final inContent = _isIn(f.context, widget.contentKey);
+      if (!inPanel && !inContent) return KeyEventResult.ignored;
+
+      // 内容区按左：若左侧已无邻居，则跨到左侧播放面板。
+      if (isLeft && inContent) {
+        if (_hasDirectLeftNeighbor(f)) return KeyEventResult.ignored;
+        final target = _firstFocusable(widget.panelKey.currentContext);
+        if (target != null && target.canRequestFocus) {
+          target.requestFocus();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      }
+
+      // 左侧面板按右：跨回内容区（优先回到上次内容区焦点）。
+      if (isRight && inPanel) {
+        final target = _lastContentFocus ??
+            _firstFocusable(widget.contentKey.currentContext);
+        if (target != null && target.canRequestFocus) {
+          target.requestFocus();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      }
+    } catch (_) {
+      // 桥接失败时交还框架默认遍历，绝不吞键。
+    }
+
+    return KeyEventResult.ignored;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onKeyEvent: _onKey,
+      child: widget.child,
+    );
+  }
 }

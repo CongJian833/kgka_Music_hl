@@ -4,9 +4,16 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../core/folder_filter.dart';
 import '../models/music_models.dart';
+import '../services/startup_diag_logger.dart'; // ====【诊断/冷启动界面卡顿】====
 
 class LocalMusicController extends ChangeNotifier {
   LocalMusicController() {
+    // ====【修复/安卓冷启动卡顿】==== 原实现在构造函数里就 _init() → 立刻查权限 → 全量扫描。
+    // 实测这台 TV 上 checkPermission 就要 0.9~1.1 秒（其中 MediaStore 查询仅 2~4ms，
+    // 成本来自首次拉起 MediaStore provider 进程），而该设备本地歌曲为 0 首 ——
+    // 等于每次冷启动白花约 1 秒。现改为**惰性加载**：
+    //   * 构造时只读取「已排除目录」（本地小文件，几十毫秒，UI 需要）；
+    //   * 权限检查 + 扫描推迟到首次真正需要时（进入本地音乐页 / 我的页展示数量）。
     _init();
   }
 
@@ -50,8 +57,46 @@ class LocalMusicController extends ChangeNotifier {
   }
 
   Future<void> _init() async {
+    // ====【修复/安卓冷启动卡顿】==== 构造阶段只读「已排除目录」，不做权限检查与扫描。
+    final initSw = Stopwatch()..start();
     await _loadExcludedFolders();
+    initSw.stop();
+    StartupDiagLogger.localMusic(
+      'init done (仅读排除目录，未扫描) songs=${_songs.length}',
+      ms: initSw.elapsedMilliseconds,
+    );
+  }
+
+  bool _initialized = false;
+  Future<void>? _ensuring;
+
+  /// 首次真正需要本地歌曲列表时调用（进入本地音乐页 / 我的页展示数量）。
+  /// 只会真正执行一次；进行中时复用同一个 Future，避免并发重复扫描。
+  Future<void> ensureInitialized() async {
+    if (_initialized) return;
+    final running = _ensuring;
+    if (running != null) return running;
+    final future = _ensureInitializedOnce();
+    _ensuring = future;
+    try {
+      await future;
+    } finally {
+      _ensuring = null;
+    }
+  }
+
+  Future<void> _ensureInitializedOnce() async {
+    final initSw = Stopwatch()..start();
+    final p1 = Stopwatch()..start();
     await _checkPermission();
+    p1.stop();
+    initSw.stop();
+    _initialized = true;
+    StartupDiagLogger.localMusic(
+      'ensureInitialized checkPermission(incl scan)=${p1.elapsedMilliseconds}ms '
+      'songs=${_songs.length}',
+      ms: initSw.elapsedMilliseconds,
+    );
   }
 
   Future<void> _loadExcludedFolders() async {
@@ -111,6 +156,7 @@ class LocalMusicController extends ChangeNotifier {
     try {
       final granted = await _channel.invokeMethod<bool>('hasPermission') ?? false;
       _hasPermission = granted;
+      _initialized = true;
       notifyListeners();
       if (_hasPermission) {
         await scanLocalMusic();
@@ -125,6 +171,7 @@ class LocalMusicController extends ChangeNotifier {
     try {
       final granted = await _channel.invokeMethod<bool>('requestPermission') ?? false;
       _hasPermission = granted;
+      _initialized = true;
       notifyListeners();
       if (_hasPermission) {
         await scanLocalMusic();
@@ -143,9 +190,23 @@ class LocalMusicController extends ChangeNotifier {
     _isScanning = true;
     notifyListeners();
 
+    // ====【诊断/冷启动界面卡顿】==== 原生 MediaStore 查询 + Dart 侧解析分别计时。
+    final totalSw = Stopwatch()..start();
+    var nativeMs = -1;
     try {
-      final List<dynamic> result = await _channel.invokeMethod('getLocalSongs');
-      final List<Song> list = [];
+      // 兼容两种返回：{}"songs": [...], "nativeMs": N} 与旧版裸列表。
+      final dynamic raw = await _channel.invokeMethod('getLocalSongs');
+      final List<dynamic> result;
+      if (raw is Map && raw['songs'] is List) {
+        result = raw['songs'] as List<dynamic>;
+        final nm = raw['nativeMs'];
+        if (nm is num) nativeMs = nm.toInt();
+      } else if (raw is List) {
+        result = raw;
+      } else {
+        result = const <dynamic>[];
+      }
+      final list = <Song>[];
 
       for (final item in result) {
         if (item is Map) {
@@ -175,6 +236,12 @@ class LocalMusicController extends ChangeNotifier {
       debugPrint('Error scanning local music: $e');
     }
 
+    totalSw.stop();
+    StartupDiagLogger.localMusic(
+      'scan done nativeQuery=${nativeMs}ms parsed=${_rawSongs.length} '
+      'songs shown=${_songs.length}',
+      ms: totalSw.elapsedMilliseconds,
+    );
     _isScanning = false;
     notifyListeners();
   }

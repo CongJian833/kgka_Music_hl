@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/music_models.dart';
@@ -7,7 +9,7 @@ import '../models/music_models.dart';
 /// 播放统计数据。
 ///
 /// 包含累计播放次数、累计听歌时长、最常听歌手/歌曲 Top 10、首次播放时间。
-/// 通过 [toJson]/[fromJson] 持久化到 SharedPreferences。
+/// 通过 [toJson]/[fromJson] 持久化。
 class PlaybackStats {
   const PlaybackStats({
     this.totalPlays = 0,
@@ -85,18 +87,48 @@ class PlaybackStats {
 /// 播放统计服务。
 ///
 /// 提供本地播放统计的记录与查询：每次播放记 +1，每上报一次听歌时长同步累加。
+/// ====【修复/切歌后小卡顿·统计迁文件】====
+// 原实现存 SharedPreferences，每次 _save `prefs.setString` 同步整写整个 prefs 文件
+// （桌面端实锤卡顿源），与播放历史一同构成"画面稳定后小卡顿"来源。现改为
+// 【独立小文件 + File 异步读写】；读取优先独立文件、回退旧 prefs 值并当场迁移。
 class PlaybackStatsService {
   static const _key = 'playback_stats';
 
+  /// 播放统计独立小文件（应用支持目录）。
+  Future<File> _file() async {
+    final dir = await getApplicationSupportDirectory();
+    return File('${dir.path}${Platform.pathSeparator}playback_stats');
+  }
+
   /// 读取当前统计；无数据时返回空的 [PlaybackStats]。
   Future<PlaybackStats> getStats() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_key);
-    if (raw == null) return const PlaybackStats();
+    // 独立文件优先
     try {
-      final json = jsonDecode(raw);
-      if (json is Map<String, dynamic>) {
-        return PlaybackStats.fromJson(json);
+      final f = await _file();
+      if (f.existsSync()) {
+        final raw = await f.readAsString();
+        if (raw.isNotEmpty) {
+          final json = jsonDecode(raw);
+          if (json is Map<String, dynamic>) {
+            return PlaybackStats.fromJson(json);
+          }
+        }
+      }
+    } catch (_) {}
+    // 旧数据（升级前存 prefs）回退 + 迁移
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_key);
+      if (raw != null) {
+        try {
+          final json = jsonDecode(raw);
+          if (json is Map<String, dynamic>) {
+            final stats = PlaybackStats.fromJson(json);
+            await _save(stats);
+            await prefs.remove(_key); // 迁移后清 prefs 旧值
+            return stats;
+          }
+        } catch (_) {}
       }
     } catch (_) {}
     return const PlaybackStats();
@@ -137,14 +169,22 @@ class PlaybackStatsService {
     await _save(updated);
   }
 
-  /// 清空统计。
+  /// 清空统计（文件 + 旧 prefs 双清）。
   Future<void> clear() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_key);
+    try {
+      final f = await _file();
+      if (f.existsSync()) await f.delete();
+    } catch (_) {}
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_key);
+    } catch (_) {}
   }
 
   Future<void> _save(PlaybackStats stats) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_key, jsonEncode(stats.toJson()));
+    try {
+      final f = await _file();
+      await f.writeAsString(jsonEncode(stats.toJson()));
+    } catch (_) {}
   }
 }

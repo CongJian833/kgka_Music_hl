@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/music_models.dart';
+import '../services/cache_diag_logger.dart'; // ====【诊断/缓存清理卡顿】====
 import '../services/download_service.dart';
 import '../services/music_api.dart';
 
@@ -112,28 +115,62 @@ class DownloadController extends ChangeNotifier {
   int get playCacheLimit => _playCacheLimit;
 
   Future<void> setPlayCacheLimit(int limitInBytes) async {
+    // ====【诊断/缓存清理卡顿】==== 触发点3：用户在设置页改播放缓存上限。
+    final sw = Stopwatch()..start();
     _playCacheLimit = limitInBytes;
     final prefs = await SharedPreferences.getInstance();
+    final prefsWriteSw = Stopwatch()..start();
     await prefs.setInt(_playCacheLimitKey, limitInBytes);
+    prefsWriteSw.stop();
     notifyListeners();
-    await _prunePlayCache(excludePaths: const {});
+    await _prunePlayCache(excludePaths: const {}, origin: 'setLimit');
+    sw.stop();
+    CacheDiagLogger.log(
+      'ui.setPlayCacheLimit',
+      'newLimit=${(limitInBytes / (1024 * 1024)).toStringAsFixed(0)}MB '
+      'prefsSetInt=${prefsWriteSw.elapsedMilliseconds}ms',
+      ms: sw.elapsedMilliseconds,
+    );
   }
 
   /// 启动时加载索引并校验文件存在性。
   Future<void> initialize() async {
     if (_initialized) return;
     _initialized = true;
+    // ====【诊断/缓存清理卡顿】==== 触发点1：应用启动。逐阶段计时。
+    final sw = Stopwatch()..start();
+    final prefsSw = Stopwatch()..start();
     final prefs = await SharedPreferences.getInstance();
     _playCacheLimit = prefs.getInt(_playCacheLimitKey) ?? (300 * 1024 * 1024);
+    prefsSw.stop();
+    final dlSw = Stopwatch()..start();
     await _loadDownloads();
+    dlSw.stop();
+    final pcSw = Stopwatch()..start();
     await _loadPlayCache();
+    pcSw.stop();
+    final pruneSw = Stopwatch()..start();
     // 启动时 LRU 清理播放缓存
-    await _prunePlayCache(excludePaths: const {});
+    await _prunePlayCache(excludePaths: const {}, origin: 'startup');
+    pruneSw.stop();
+    sw.stop();
+    CacheDiagLogger.log(
+      'init.initialize',
+      'limit=${(_playCacheLimit / (1024 * 1024)).toStringAsFixed(0)}MB '
+      'indexEntries=${_playCache.length} downloads=${_downloads.length} '
+      'prefs=${prefsSw.elapsedMilliseconds}ms '
+      'loadDownloads=${dlSw.elapsedMilliseconds}ms '
+      'loadPlayCache=${pcSw.elapsedMilliseconds}ms '
+      'prune=${pruneSw.elapsedMilliseconds}ms',
+      ms: sw.elapsedMilliseconds,
+    );
   }
 
   Future<void> _loadDownloads() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_downloadsIndexKey);
+    // ====【修复/切歌卡顿·索引移出 prefs】优先独立文件；无则回退旧 prefs 并迁移。====
+    // ====【诊断/缓存清理卡顿】==== 加载下载索引时逐条 fileSize 校验，启动阶段一并计时。
+    final sw = Stopwatch()..start();
+    final raw = await _readIndexFile(_downloadsIndexFileName, _downloadsIndexKey);
     if (raw == null || raw.isEmpty) return;
     try {
       final list = jsonDecode(raw);
@@ -159,12 +196,32 @@ class DownloadController extends ChangeNotifier {
         );
       }
     } catch (_) {}
+    sw.stop();
+    CacheDiagLogger.log(
+      'load.downloadsIndex',
+      'valid=${_downloads.length}',
+      ms: sw.elapsedMilliseconds,
+    );
   }
 
   Future<void> _loadPlayCache() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_playCacheIndexKey);
-    if (raw == null || raw.isEmpty) return;
+    // ====【修复/切歌卡顿·索引移出 prefs】优先独立文件；无则回退旧 prefs 并迁移。====
+    // ====【诊断/v2】==== 把「读索引文件」与「逐条 fileSize 校验」分开计时：
+    // RUN1 显示 validate=217ms 但同批文件后续 stat 只要几 ms，需定位真凶。
+    final sw = Stopwatch()..start();
+    final readSw = Stopwatch()..start();
+    final raw = await _readIndexFile(_playCacheIndexFileName, _playCacheIndexKey);
+    readSw.stop();
+    if (raw == null || raw.isEmpty) {
+      sw.stop();
+      CacheDiagLogger.log(
+        'load.playCacheIndex',
+        'raw=empty readIndex=${readSw.elapsedMilliseconds}ms',
+        ms: sw.elapsedMilliseconds,
+      );
+      return;
+    }
+    final validateSw = Stopwatch()..start();
     try {
       final list = jsonDecode(raw);
       if (list is! List) return;
@@ -192,10 +249,31 @@ class DownloadController extends ChangeNotifier {
         );
       }
     } catch (_) {}
+    validateSw.stop();
+    sw.stop();
+    CacheDiagLogger.log(
+      'load.playCacheIndex',
+      'valid=${_playCache.length} bytes=${raw.length} '
+      'readIndex=${readSw.elapsedMilliseconds}ms '
+      'validate=${validateSw.elapsedMilliseconds}ms',
+      ms: sw.elapsedMilliseconds,
+    );
+  }
+
+  /// 带诊断计时的 [DownloadService.fileSize] 包装（每个条目一次同步 stat）。
+  Future<int> _fileSize(String path) async {
+    final sw = Stopwatch()..start();
+    final size = await _service.fileSize(path);
+    sw.stop();
+    CacheDiagLogger.log(
+      'fileSize',
+      'path=${path.split(Platform.pathSeparator).last} size=$size',
+      ms: sw.elapsedMilliseconds,
+    );
+    return size;
   }
 
   Future<void> _persistDownloads() async {
-    final prefs = await SharedPreferences.getInstance();
     final list = _downloads.values
         .where((e) => e.status == DownloadStatus.downloaded)
         .map((e) => {
@@ -205,11 +283,14 @@ class DownloadController extends ChangeNotifier {
               'downloadedAt': e.downloadedAt?.toIso8601String(),
             })
         .toList();
-    await prefs.setString(_downloadsIndexKey, jsonEncode(list));
+    // ====【修复/切歌卡顿·索引移出 prefs】原实现 prefs.setString 同步整写整个 prefs 文件
+    // （实测 430ms 级阻塞）。改独立小文件 + File 异步写。====
+    await _writeIndexFile(_downloadsIndexFileName, jsonEncode(list));
   }
 
   Future<void> _persistPlayCache() async {
-    final prefs = await SharedPreferences.getInstance();
+    // ====【诊断/缓存清理卡顿】==== 索引 JSON 编码 + 异步写盘各计时（写盘在主 isolate 上）。
+    final sw = Stopwatch()..start();
     final list = _playCache.values
         .map((e) => {
               'cacheKey': e.cacheKey,
@@ -220,7 +301,89 @@ class DownloadController extends ChangeNotifier {
               'cachedAt': e.cachedAt.toIso8601String(),
             })
         .toList();
-    await prefs.setString(_playCacheIndexKey, jsonEncode(list));
+    // ====【修复/切歌卡顿·索引移出 prefs】原实现 prefs.setString 同步整写（实测 ~430ms），
+    // 且发生在"无缓存歌曲"的 cacheForPlayback 完成后 2~6 秒 —— 正是第二处小卡顿的来源。
+    // 改独立小文件 + File 异步写。====
+    final encodeSw = Stopwatch()..start();
+    final json = jsonEncode(list);
+    encodeSw.stop();
+    final writeSw = Stopwatch()..start();
+    await _writeIndexFile(_playCacheIndexFileName, json);
+    writeSw.stop();
+    sw.stop();
+    CacheDiagLogger.log(
+      'persist.playCacheIndex',
+      'entries=${list.length} bytes=${json.length} '
+      'encode=${encodeSw.elapsedMilliseconds}ms '
+      'write=${writeSw.elapsedMilliseconds}ms',
+      ms: sw.elapsedMilliseconds,
+    );
+  }
+
+  // ====【修复/切歌卡顿·索引移出 prefs】索引文件读写（读取时兼容旧 prefs 并迁移）====
+  static const _downloadsIndexFileName = 'downloads_index';
+  static const _playCacheIndexFileName = 'play_cache_index';
+
+  Future<File> _indexFile(String name) async {
+    final dir = await getApplicationSupportDirectory();
+    return File('${dir.path}${Platform.pathSeparator}$name');
+  }
+
+  Future<void> _writeIndexFile(String name, String data) async {
+    try {
+      final f = await _indexFile(name);
+      await f.writeAsString(data);
+    } catch (_) {}
+  }
+
+  /// 读取索引原始 JSON：独立文件优先；无则回退旧 prefs 值并当场迁移。
+  ///
+  /// ====【诊断/v2】==== RUN1 里 load.playCacheIndex=217ms、load.downloadsIndex=103ms，
+  /// 但同批文件之后的 stat 只要几 ms，说明耗时不在校验循环。这里把
+  /// 「定位文件 / 同步 existsSync / 异步 readAsString」三段拆开计时以定位真凶。
+  Future<String?> _readIndexFile(String name, String legacyKey) async {
+    final sw = Stopwatch()..start();
+    var locateMs = 0;
+    try {
+      final locateSw = Stopwatch()..start();
+      final f = await _indexFile(name);
+      locateSw.stop();
+      locateMs = locateSw.elapsedMilliseconds;
+      final existsSw = Stopwatch()..start();
+      final exists = f.existsSync();
+      existsSw.stop();
+      if (exists) {
+        final readSw = Stopwatch()..start();
+        final s = await f.readAsString();
+        readSw.stop();
+        CacheDiagLogger.log(
+          'readIndexFile',
+          'name=$name bytes=${s.length} locate=${locateMs}ms '
+          'existsSync=${existsSw.elapsedMilliseconds}ms '
+          'readAsString=${readSw.elapsedMilliseconds}ms',
+          ms: sw.elapsedMilliseconds,
+        );
+        if (s.isNotEmpty) return s;
+      } else {
+        CacheDiagLogger.log(
+          'readIndexFile',
+          'name=$name exists=false（走 prefs 回退）',
+          ms: sw.elapsedMilliseconds,
+        );
+      }
+    } catch (_) {}
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final old = prefs.getString(legacyKey);
+      if (old != null && old.isNotEmpty) {
+        try {
+          await _writeIndexFile(name, old);
+          await prefs.remove(legacyKey); // 迁移后清 prefs 旧值
+        } catch (_) {}
+        return old;
+      }
+    } catch (_) {}
+    return null;
   }
 
   // ===== 查询 =====
@@ -469,13 +632,27 @@ class DownloadController extends ChangeNotifier {
     if (_playCache[key] != null) return;
     if (_downloads[song.hash]?.status == DownloadStatus.downloading) return;
 
+    // ====【诊断/缓存清理卡顿】==== 触发点2：一首歌首播落盘后的整条链路。
+    // 关键观察点：本方法结束时刻 = 切歌后 UI 正在恢复播放的时段，
+    // 若此时 FRAME 行出现卡顿，即由下面的 prune/persist 造成。
+    final sw = Stopwatch()..start();
+    var stage = 'download';
     try {
+      // 阶段A：下载 + 落盘校验（含同步文件头读取）
+      final dlSw = Stopwatch()..start();
       final path = await _service.cacheForPlayback(
         song: song,
         quality: quality,
         url: url,
       );
-      final size = await _service.fileSize(path);
+      dlSw.stop();
+      // 阶段B：落盘后取大小（同步 stat，走诊断包装）
+      stage = 'fileSize';
+      final sizeSw = Stopwatch()..start();
+      final size = await _fileSize(path);
+      sizeSw.stop();
+      // 阶段C：更新索引 + 通知 UI
+      stage = 'persist';
       _playCache[key] = PlayCacheEntry(
         cacheKey: key,
         song: song,
@@ -484,21 +661,56 @@ class DownloadController extends ChangeNotifier {
         size: size,
         cachedAt: DateTime.now(),
       );
+      final notifySw = Stopwatch()..start();
       notifyListeners();
+      notifySw.stop();
+      final persistSw = Stopwatch()..start();
       await _persistPlayCache();
-      // LRU 清理
-      await _prunePlayCache(excludePaths: {path});
-    } catch (_) {
-      // 播放缓存失败静默忽略
+      persistSw.stop();
+      // 阶段D：LRU 清理（本次新增文件本身被排除）
+      stage = 'prune';
+      final pruneSw = Stopwatch()..start();
+      await _prunePlayCache(excludePaths: {path}, origin: 'cacheForPlayback');
+      pruneSw.stop();
+      sw.stop();
+      CacheDiagLogger.log(
+        'cacheForPlayback',
+        'song=${song.title} hash=${song.hash} quality=${quality.apiValue} '
+        'size=${(size / (1024 * 1024)).toStringAsFixed(1)}MB '
+        'download=${dlSw.elapsedMilliseconds}ms '
+        'sizeQuery=${sizeSw.elapsedMilliseconds}ms '
+        'notify=${notifySw.elapsedMilliseconds}ms '
+        'persist=${persistSw.elapsedMilliseconds}ms '
+        'prune=${pruneSw.elapsedMilliseconds}ms',
+        ms: sw.elapsedMilliseconds,
+      );
+    } catch (error) {
+      sw.stop();
+      // 播放缓存失败静默忽略（仅记录诊断）
+      CacheDiagLogger.log(
+        'cacheForPlayback',
+        'failed stage=$stage song=${song.title} hash=${song.hash} '
+        'error=${error.toString().split('\n').first}',
+        ms: sw.elapsedMilliseconds,
+      );
     }
   }
 
   /// 清空所有播放缓存。
   Future<void> clearPlayCache() async {
+    // ====【诊断/缓存清理卡顿】==== 触发点4a：设置页/缓存管理"清空播放缓存"。
+    final sw = Stopwatch()..start();
+    final deleted = _playCache.length;
     await _service.clearPlayCacheDir();
     _playCache.clear();
     notifyListeners();
     await _persistPlayCache();
+    sw.stop();
+    CacheDiagLogger.log(
+      'ui.clearPlayCache',
+      'indexEntriesCleared=$deleted',
+      ms: sw.elapsedMilliseconds,
+    );
   }
 
   /// 删除单首播放缓存。
@@ -506,14 +718,30 @@ class DownloadController extends ChangeNotifier {
     final key = _service.cacheKeyFor(song, quality);
     final entry = _playCache[key];
     if (entry != null) {
+      // ====【诊断/缓存清理卡顿】==== 触发点4b：单首删除（歌曲页/换源自愈会调用）。
+      final sw = Stopwatch()..start();
       await _service.deleteFile(entry.filePath);
       _playCache.remove(key);
       notifyListeners();
       await _persistPlayCache();
+      sw.stop();
+      CacheDiagLogger.log(
+        'ui.deletePlayCache',
+        'song=${song.title} hash=${song.hash}',
+        ms: sw.elapsedMilliseconds,
+      );
     }
   }
 
-  Future<void> _prunePlayCache({Set<String> excludePaths = const {}}) async {
+  Future<void> _prunePlayCache({
+    Set<String> excludePaths = const {},
+    String origin = 'unknown',
+  }) async {
+    // ====【诊断/缓存清理卡顿】==== 一次清理共三段主 isolate 工作：
+    //   ①构造+排序索引（内存）②service.prunePlayCache（全量同步 stat + 删除）
+    //   ③清理后逐条再校验一遍（又一次全量同步 stat）—— ③ 是最容易被忽略的第二遍扫描。
+    final totalSw = Stopwatch()..start();
+    final buildSw = Stopwatch()..start();
     final entries = _playCache.values
         .map((e) => (
               cacheKey: e.cacheKey,
@@ -522,13 +750,18 @@ class DownloadController extends ChangeNotifier {
             ))
         .toList()
       ..sort((a, b) => a.cachedAt.compareTo(b.cachedAt));
+    buildSw.stop();
 
-    await _service.prunePlayCache(
+    final serviceSw = Stopwatch()..start();
+    final result = await _service.prunePlayCache(
       entries,
       maxBytes: _playCacheLimit,
       excludePaths: excludePaths,
+      origin: origin,
     );
+    serviceSw.stop();
 
+    final verifySw = Stopwatch()..start();
     // 清理后校验索引，移除已删除的条目
     final toRemove = <String>[];
     for (final entry in _playCache.values) {
@@ -537,6 +770,9 @@ class DownloadController extends ChangeNotifier {
         toRemove.add(entry.cacheKey);
       }
     }
+    verifySw.stop();
+
+    final persistSw = Stopwatch()..start();
     if (toRemove.isNotEmpty) {
       for (final key in toRemove) {
         _playCache.remove(key);
@@ -544,5 +780,21 @@ class DownloadController extends ChangeNotifier {
       notifyListeners();
       await _persistPlayCache();
     }
+    persistSw.stop();
+    totalSw.stop();
+
+    CacheDiagLogger.log(
+      'prune.controller',
+      'origin=$origin entries=${entries.length} '
+      'serviceScanned=${result.scannedEntries} '
+      'deleted=${result.deletedCount} removedFromIndex=${toRemove.length} '
+      'excludedSkip=${result.skippedExcluded} '
+      'buildIndex=${buildSw.elapsedMilliseconds}ms '
+      'service=${serviceSw.elapsedMilliseconds}ms '
+      'verifySweep=${verifySw.elapsedMilliseconds}ms(第二遍全量 stat, '
+      '${_playCache.length} 条) '
+      'persist=${persistSw.elapsedMilliseconds}ms',
+      ms: totalSw.elapsedMilliseconds,
+    );
   }
 }

@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import '../design_tokens.dart';
+import '../widgets/tv_focus.dart'; // ====【新增/TV 遥控器焦点】====
 
 import '../../controllers/auth_controller.dart';
 import '../../controllers/player_controller.dart';
@@ -10,6 +13,7 @@ import '../widgets/mini_player.dart';
 import '../widgets/now_playing_badge.dart';
 import '../widgets/song_action_sheets.dart';
 import '../widgets/toast.dart';
+import '../widgets/window_title_bar.dart';
 import '../adaptive_layout.dart';
 import 'artist_detail_page.dart';
 
@@ -96,6 +100,16 @@ class _PlaybackHistoryPageState extends State<PlaybackHistoryPage> {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器适配】==== 页面级焦点作用域：
+    //   * 进入页面后焦点落到第一个可聚焦组件；
+    //   * 离开再回来恢复上次位置（debugLabel 作为记忆键）。
+    return TvFocusScope(
+      debugLabel: 'history',
+      child: _buildHistoryInner(context),
+    );
+  }
+
+  Widget _buildHistoryInner(BuildContext context) {
     final bottomInset = MediaQuery.paddingOf(context).bottom;
     final colorScheme = Theme.of(context).colorScheme;
 
@@ -185,10 +199,16 @@ class _PlaybackHistoryPageState extends State<PlaybackHistoryPage> {
         style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
       ),
       actions: [
-        IconButton(
-          tooltip: '清空',
-          onPressed: count > 0 ? _confirmClear : null,
-          icon: const Icon(Icons.delete_sweep_outlined),
+        // Windows 上右侧为窗口控制按钮让出空间。
+        Padding(
+          padding: EdgeInsets.only(
+            right: Platform.isWindows ? WindowTitleBar.controlAreaRight : 0,
+          ),
+          child: IconButton(
+            tooltip: '清空',
+            onPressed: count > 0 ? _confirmClear : null,
+            icon: const Icon(Icons.delete_sweep_outlined),
+          ),
         ),
       ],
     );
@@ -222,6 +242,18 @@ class _HistorySongRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.md,
+        child: _buildHistorySongRowInner(context),
+      ),
+    );
+  }
+
+  Widget _buildHistorySongRowInner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
     return AnimatedBuilder(

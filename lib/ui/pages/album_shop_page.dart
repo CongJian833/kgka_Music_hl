@@ -6,6 +6,7 @@ import '../../controllers/theme_controller.dart';
 import '../../models/music_models.dart';
 import '../../services/music_api.dart';
 import '../widgets/artwork.dart';
+import '../widgets/tv_focus.dart'; // ====【新增/TV 遥控器焦点】====
 import '../widgets/mini_player.dart';
 import 'playlist_detail_page.dart';
 
@@ -93,6 +94,16 @@ class _AlbumShopPageState extends State<AlbumShopPage> {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器适配】==== 页面级焦点作用域：
+    //   * 进入页面后焦点落到第一个可聚焦组件；
+    //   * 离开再回来恢复上次位置（debugLabel 作为记忆键）。
+    return TvFocusScope(
+      debugLabel: 'albumShop',
+      child: _buildAlbumShopInner(context),
+    );
+  }
+
+  Widget _buildAlbumShopInner(BuildContext context) {
     final bottomInset = MediaQuery.paddingOf(context).bottom;
     final size = MediaQuery.sizeOf(context);
     // 多列自适应是车机横屏专属；普通横屏/竖屏保持原项目固定 2 列。
@@ -186,6 +197,18 @@ class _AlbumCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: 16,
+        child: _buildAlbumCardInner(context),
+      ),
+    );
+  }
+
+  Widget _buildAlbumCardInner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
     return GestureDetector(

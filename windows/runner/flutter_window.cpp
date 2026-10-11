@@ -2,6 +2,9 @@
 
 #include <optional>
 
+#include <flutter/method_channel.h>
+#include <flutter/standard_method_codec.h>
+
 #include "flutter/generated_plugin_registrant.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
@@ -27,6 +30,20 @@ bool FlutterWindow::OnCreate() {
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
+  // Native -> Dart channel: reports window sizing/maximize/fullscreen changes
+  // so the custom title bar's maximize/restore button can refresh instantly
+  // without polling. The Dart side uses its authoritative
+  // windowManager.isMaximized() to decide the icon.
+  window_state_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), "ka_music/window_state",
+          &flutter::StandardMethodCodec::GetInstance());
+
+  // 注：此前曾尝试在此为 channel 注册 Dart->Native 的 'quit' 处理器以实现"优雅退出"
+  // （PostQuitMessage(0) 结束消息循环）。实测该优雅退出方案不生效（进程悬挂 + 仍崩溃 +
+  // WerFault 自重启），已回退移除；本 channel 目前仅用于 Native->Dart 的状态上报
+  // (InvokeMethod("windowStateChanged"))。
+
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();
   });
@@ -51,6 +68,15 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  // Fire this before plugins get a chance to intercept WM_SIZE, so the custom
+  // title bar always learns about maximize/restore/fullscreen transitions even
+  // when another handler consumes the message. Delegate the actual icon
+  // decision to the Dart layer (windowManager.isMaximized()), which also
+  // covers frameless fullscreen where ::IsZoomed() may report false.
+  if (message == WM_SIZE && window_state_channel_) {
+    window_state_channel_->InvokeMethod("windowStateChanged", nullptr);
+  }
+
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =

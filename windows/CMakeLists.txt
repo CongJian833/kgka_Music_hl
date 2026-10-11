@@ -87,6 +87,14 @@ if(PLUGIN_BUNDLED_LIBRARIES)
     COMPONENT Runtime)
 endif()
 
+# ====【正式迁移/Windows 音频后端】BASS 播放引擎 DLL：随应用安装到 exe 同目录 ====
+# bass.dll + bass_fx.dll（BASS_FX Tempo 内核 SoundTouch 2.0，非商业免费授权）。
+install(FILES
+  "${CMAKE_CURRENT_SOURCE_DIR}/bass_libs/bass.dll"
+  "${CMAKE_CURRENT_SOURCE_DIR}/bass_libs/bass_fx.dll"
+  DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+  COMPONENT Runtime)
+
 # Copy the native assets provided by the build.dart from all packages.
 set(NATIVE_ASSETS_DIR "${PROJECT_BUILD_DIR}native_assets/windows/")
 install(DIRECTORY "${NATIVE_ASSETS_DIR}"

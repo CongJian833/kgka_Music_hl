@@ -1,5 +1,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
+    <!-- 这些插件声明 minSdk=24（跟随 Flutter 默认值），但其代码内部有 SDK_INT 版本保护，
+         在安卓 5.1 上可正常运行。此处强制合并以允许项目 minSdk=22。 -->
+    <uses-sdk tools:overrideLibrary="com.ryanheise.audio_session,io.flutter.plugins.sharedpreferences,io.flutter.plugins.urllauncher,io.flutter.plugins.imagepicker,io.flutter.plugins.flutter_plugin_android_lifecycle,com.baseflow.permissionhandler,androidx.activity,androidx.activity.ktx,androidx.core,androidx.core.ktx,androidx.lifecycle.viewmodel.savedstate,androidx.lifecycle.viewmodel,androidx.lifecycle.process,androidx.lifecycle.viewmodel.ktx,androidx.lifecycle.lifecycle.viewmodel.anchor,androidx.lifecycle.livedata.core,androidx.lifecycle.runtime,androidx.savedstate,androidx.lifecycle.ktx,androidx.lifecycle.livedata,androidx.lifecycle.livedata.core.ktx,androidx.navigationevent,androidx.savedstate.ktx" />
+    <!-- ====【新增/Android TV 适配】==== 声明既不要求触摸屏、也不要求 Leanback，
+         这样同一次构建可同时安装在 TV、车机与手机上（仅作商店筛选信息，不影响 adb 安装）。 -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
@@ -18,6 +26,7 @@
         android:name="${applicationName}"
         android:usesCleartextTraffic="true"
         android:requestLegacyExternalStorage="true"
+        android:banner="@drawable/tv_banner"
         android:icon="@mipmap/ic_launcher">
         <activity
             android:name=".MainActivity"
@@ -39,6 +48,11 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+            <!-- ====【新增/Android TV 适配】==== 让应用出现在 Android TV 的 Leanback 启动器上。 -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
             </intent-filter>
         </activity>
         <service

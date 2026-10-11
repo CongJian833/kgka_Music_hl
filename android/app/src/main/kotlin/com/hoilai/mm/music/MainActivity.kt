@@ -12,11 +12,13 @@ import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.Settings
 import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
 import android.media.audiofx.DynamicsProcessing
+import android.media.audiofx.LoudnessEnhancer
 import android.view.WindowManager
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -25,6 +27,9 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import com.ryanheise.audioservice.AudioServiceActivity
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : AudioServiceActivity() {
     private val updateDownloads = mutableMapOf<Long, String>()
@@ -38,6 +43,48 @@ class MainActivity : AudioServiceActivity() {
     private var dynamicsProcessing: DynamicsProcessing? = null
     private var dynamicsProcessingSessionId: Int? = null
     private var pendingPermissionResult: MethodChannel.Result? = null
+
+    // ====【新增/响度归一化】LoudnessEnhancer（正向提升增益）====
+    // 说明：该效果为"纯提升"类，对负值不可靠 → 衰减一律由 Dart 侧播放器音量承担。
+    // 生命周期照抄 ensureEqualizer 范式：同 audioSessionId 复用，避免每次切歌
+    // 重建效果造成几十毫秒的音频断点。
+    private var loudnessEnhancer: LoudnessEnhancer? = null
+    private var loudnessEnhancerSessionId: Int? = null
+
+    // ====【新增/响度归一化】分析任务取消标志表 ====
+    // Dart 无法取消已发起的 invokeMethod，故用第二个通道方法置位此标志，
+    // 让原生解码循环尽快退出并释放 MediaCodec/MediaExtractor。
+    private val loudnessJobs = ConcurrentHashMap<String, AtomicBoolean>()
+
+    /** 分析用的后台线程池（解码是重 CPU 任务，绝不能占用主线程导致 ANR）。 */
+    private val loudnessExecutor = Executors.newSingleThreadExecutor()
+
+    // ====【诊断/冷启动界面卡顿】==== 原生侧耗时回传 Dart（写进启动诊断日志）。
+    // 目的：定位低端安卓冷启动 8~10 秒卡顿到底卡在哪个原生调用上。
+    private var diagChannel: MethodChannel? = null
+    private val processStartMs = SystemClock.elapsedRealtime()
+
+    /** 把原生耗时发给 Dart 侧日志（失败静默，绝不影响功能）。 */
+    private fun diagNative(stage: String, ms: Long, note: String = "") {
+        runCatching {
+            diagChannel?.invokeMethod(
+                "log",
+                mapOf(
+                    "stage" to stage,
+                    "ms" to ms.toInt(),
+                    "note" to "sinceProcessStart=${SystemClock.elapsedRealtime() - processStartMs}ms $note",
+                )
+            )
+        }
+    }
+
+    /** 包住任意原生调用并上报耗时。 */
+    private inline fun <T> diagTimed(stage: String, note: String = "", block: () -> T): T {
+        val sw = SystemClock.elapsedRealtime()
+        val r = block()
+        diagNative(stage, SystemClock.elapsedRealtime() - sw, note)
+        return r
+    }
 
     companion object {
         private const val REQUEST_READ_AUDIO = 1001
@@ -76,6 +123,12 @@ class MainActivity : AudioServiceActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        // 诊断通道：原生 → Dart 单向上报（Dart 侧只消费不回复）。
+        diagChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "kgka_music_hl/diag"
+        )
+        diagNative("configureFlutterEngineStart", 0, "通道注册开始")
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "kgka_music_hl/screen")
             .setMethodCallHandler { call, result ->
@@ -179,6 +232,71 @@ class MainActivity : AudioServiceActivity() {
                             result.error("volume_normalization_failed", error.message, null)
                         }
                     }
+                    // ====【新增/响度归一化】增益通道（正向提升）====
+                    // 负增益不走这里：LoudnessEnhancer 是"纯提升"类效果，对负值不可靠，
+                    // 衰减由 Dart 侧 audioPlayer.setVolume 承担。
+                    "configureLoudnessGain" -> {
+                        val audioSessionId = call.argument<Int>("audioSessionId")
+                        val enabled = call.argument<Boolean>("enabled") ?: false
+                        val gainDb = call.argument<Double>("gainDb") ?: 0.0
+
+                        runCatching {
+                            configureLoudnessGain(audioSessionId, enabled, gainDb)
+                        }.onSuccess { supported ->
+                            result.success(supported)
+                        }.onFailure { error ->
+                            releaseLoudnessEnhancer()
+                            result.error("loudness_gain_failed", error.message, null)
+                        }
+                    }
+                    // ====【新增/响度归一化】离线响度分析（MediaExtractor + MediaCodec）====
+                    "analyzeLoudness" -> {
+                        val jobId = call.argument<String>("jobId")
+                        val path = call.argument<String>("path")
+                        val isUrl = call.argument<Boolean>("isUrl") ?: false
+                        val maxSeconds = call.argument<Int>("maxSeconds") ?: 600
+
+                        if (jobId == null || path == null) {
+                            result.error("bad_args", "jobId/path 不能为空", null)
+                        } else {
+                            val cancelFlag = AtomicBoolean(false)
+                            loudnessJobs[jobId] = cancelFlag
+                            // 解码放到后台线程；结果必须切回主线程回调（Result 非线程安全）。
+                            loudnessExecutor.execute {
+                                val res = runCatching {
+                                    LoudnessAnalyzerNative.analyze(
+                                        pathOrUrl = path,
+                                        isUrl = isUrl,
+                                        maxSeconds = maxSeconds,
+                                        isCancelled = { cancelFlag.get() }
+                                    )
+                                }.getOrElse { e ->
+                                    LoudnessAnalyzerNative.Result(
+                                        false, null, -120.0, 0, 0,
+                                        e.message ?: "analyze_exception"
+                                    )
+                                }
+                                loudnessJobs.remove(jobId)
+                                runOnUiThread {
+                                    result.success(
+                                        mapOf(
+                                            "ok" to res.ok,
+                                            "blockMsq" to res.blockMeanSquares,
+                                            "peak" to res.peakDbfs,
+                                            "sampleRate" to res.sampleRate,
+                                            "channels" to res.channels,
+                                            "error" to res.error
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    "cancelLoudnessAnalysis" -> {
+                        val jobId = call.argument<String>("jobId")
+                        loudnessJobs[jobId]?.set(true)
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -202,10 +320,19 @@ class MainActivity : AudioServiceActivity() {
                             result.error("no_permission", "READ_MEDIA_AUDIO permission not granted", null)
                             return@setMethodCallHandler
                         }
+                        // ====【诊断/冷启动界面卡顿】==== 这个 handler 跑在 Android 主线程，
+                        // MediaStore 全量查询也会阻塞主线程；这里把原生查询耗时一并回传 Dart，
+                        // 便于区分"卡在原生查询"还是"卡在平台通道编码/Dart 解析"。
+                        val queryStart = SystemClock.elapsedRealtime()
                         runCatching {
                             queryLocalSongs()
                         }.onSuccess { songs ->
-                            result.success(songs)
+                            result.success(
+                                mapOf(
+                                    "songs" to songs,
+                                    "nativeMs" to (SystemClock.elapsedRealtime() - queryStart).toInt(),
+                                )
+                            )
                         }.onFailure { error ->
                             result.error("query_failed", error.message, null)
                         }
@@ -352,6 +479,8 @@ class MainActivity : AudioServiceActivity() {
                     else -> result.notImplemented()
                 }
             }
+        // 原生侧通道/引擎配置全部完成（冷启动里卡在原生准备工作的上界）。
+        diagNative("configureFlutterEngineDone", 0, "全部通道注册完成")
     }
 
     private fun readAudioPermission(): String {
@@ -530,7 +659,9 @@ class MainActivity : AudioServiceActivity() {
             return equalizer!!
         }
         releaseEqualizer()
-        return Equalizer(0, audioSessionId).also {
+        return diagTimed("createEqualizer", "sessionId=$audioSessionId 首次创建 DSP 效果") {
+            Equalizer(0, audioSessionId)
+        }.also {
             equalizer = it
             equalizerSessionId = audioSessionId
         }
@@ -562,7 +693,9 @@ class MainActivity : AudioServiceActivity() {
             bassBoost!!
         } else {
             releaseBassBoost()
-            BassBoost(0, audioSessionId).also {
+            diagTimed("createBassBoost", "sessionId=$audioSessionId") {
+                BassBoost(0, audioSessionId)
+            }.also {
                 bassBoost = it
                 bassBoostSessionId = audioSessionId
             }
@@ -587,6 +720,79 @@ class MainActivity : AudioServiceActivity() {
         bassBoostSessionId = null
     }
 
+    // ====【新增/响度归一化】LoudnessEnhancer 增益通道 ====
+    /**
+     * 设置正向提升增益（dB）。[enabled]=false 时关闭效果（增益归零）。
+     *
+     * 实现要点：
+     *   * LoudnessEnhancer 的增益单位是【毫贝】，故传入值需 ×100（与 just_audio 的做法一致）；
+     *   * 该效果仅做提升，负值不可靠 → 衰减由 Dart 侧播放器音量负责，这里只处理正向；
+     *   * 同 audioSessionId 复用已有实例（避免每次切歌重建效果造成音频断点）；
+     *   * 用 hasControl() 检查效果是否真正可用（部分 ROM 上会被系统拒绝）。
+     */
+    private fun configureLoudnessGain(
+        audioSessionId: Int?,
+        enabled: Boolean,
+        gainDb: Double
+    ): Boolean {
+        if (!enabled || gainDb <= 0.0) {
+            // 关闭提升：不释放实例（避免重建断点），仅禁用并归零。
+            // 注意：不能用 `enabled = false`——本函数形参同名为 enabled（val），会遮蔽效果属性，
+            // 必须通过显式变量访问，避免编译报错与语义歧义。
+            val existing = loudnessEnhancer
+            if (existing != null) {
+                runCatching {
+                    existing.enabled = false
+                    existing.setTargetGain(0)
+                }
+            }
+            return true
+        }
+        if (audioSessionId == null || audioSessionId <= 0) {
+            return false
+        }
+
+        val effect = if (loudnessEnhancerSessionId == audioSessionId && loudnessEnhancer != null) {
+            loudnessEnhancer!!
+        } else {
+            releaseLoudnessEnhancer()
+            diagTimed("createLoudnessEnhancer", "sessionId=$audioSessionId") {
+                LoudnessEnhancer(audioSessionId)
+            }.also {
+                loudnessEnhancer = it
+                loudnessEnhancerSessionId = audioSessionId
+            }
+        }
+
+        if (!effect.hasControl()) {
+            releaseLoudnessEnhancer()
+            return false
+        }
+
+        // dB → 毫贝
+        effect.setTargetGain((gainDb * 100.0).toInt())
+        effect.enabled = true
+        return true
+    }
+
+    private fun releaseLoudnessEnhancer() {
+        val existing = loudnessEnhancer
+        if (existing != null) {
+            runCatching {
+                existing.enabled = false
+                existing.release()
+            }
+        }
+        loudnessEnhancer = null
+        loudnessEnhancerSessionId = null
+    }
+
+    // ===== 原实现（备份，供回退）：动态压缩式音量均衡 =====
+    // 【已废弃·不再调用】原方案用 DynamicsProcessing 做曲内动态压缩，只压平歌曲内部
+    // 强弱差，无法让不同歌曲的整体响度趋同，且压缩动态（听感泵动）。
+    // 新方案为【响度归一化】：LoudnessAnalyzerNative 离线测量 integrated LUFS 后
+    // 施加单一固定增益偏移（正向 configureLoudnessGain / 负向 Dart 侧播放器音量）。
+    // 本方法与上方通道分支均原样保留，便于快速回退。
     private fun configureVolumeNormalization(audioSessionId: Int?, enabled: Boolean): Boolean {
         if (!enabled) {
             releaseDynamicsProcessing()
@@ -780,6 +986,15 @@ class MainActivity : AudioServiceActivity() {
     override fun onDestroy() {
         releaseEqualizer()
         releaseBassBoost()
+        // ====【修复/资源泄漏】原实现遗漏了 DynamicsProcessing 的释放 ====
+        // 该效果此前未释放，会随 Activity 重建累积占用音频效果资源。
+        // 现已保留（不调用）DynamicsProcessing 代码，但释放路径必须补上。
+        releaseDynamicsProcessing()
+        // ====【新增/响度归一化】释放增益效果与分析任务 ====
+        releaseLoudnessEnhancer()
+        loudnessJobs.values.forEach { it.set(true) }
+        loudnessJobs.clear()
+        loudnessExecutor.shutdownNow()
         if (downloadReceiverRegistered) {
             unregisterReceiver(downloadReceiver)
             downloadReceiverRegistered = false

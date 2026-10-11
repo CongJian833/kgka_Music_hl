@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../widgets/app_section.dart';
 import '../widgets/app_feedback.dart';
 import '../design_tokens.dart';
+import '../widgets/tv_focus.dart'; // ====【新增/TV 遥控器焦点】====
 import 'package:flutter/services.dart';
 
 import '../../config/app_config.dart';
@@ -20,6 +21,7 @@ import '../widgets/mini_player.dart';
 import '../widgets/now_playing_badge.dart';
 import '../widgets/song_action_sheets.dart';
 import '../widgets/toast.dart';
+import '../widgets/window_title_bar.dart';
 import '../adaptive_layout.dart';
 import 'artist_detail_page.dart';
 
@@ -980,6 +982,16 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器适配】==== 页面级焦点作用域：
+    //   * 进入页面后焦点落到第一个可聚焦组件；
+    //   * 离开再回来恢复上次位置（debugLabel 作为记忆键）。
+    return TvFocusScope(
+      debugLabel: 'playlistDetail',
+      child: _buildDetailInner(context),
+    );
+  }
+
+  Widget _buildDetailInner(BuildContext context) {
     final bottomInset = MediaQuery.paddingOf(context).bottom;
 
     return Scaffold(
@@ -1037,54 +1049,70 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                         ),
                       ),
                 actions: [
-                  if (_selectionMode)
-                    TextButton(
-                      onPressed: _exitSelectionMode,
-                      child: const Text('取消'),
-                    )
-                  else if (!_isSearching) ...[
-                    IconButton(
-                      tooltip: '搜索',
-                      onPressed: _toggleSearch,
-                      icon: const Icon(Icons.search_rounded),
+                  // Windows 上右侧为窗口控制按钮让出空间。
+                  Padding(
+                    padding: EdgeInsets.only(
+                      right: Platform.isWindows
+                          ? WindowTitleBar.controlAreaRight
+                          : 0,
                     ),
-                    IconButton(
-                      tooltip: '分享',
-                      onPressed: _sharePlaylist,
-                      icon: const Icon(Icons.share_rounded),
-                    ),
-                    IconButton(
-                      tooltip: '导入歌单',
-                      onPressed: () => showImportPlaylistSheet(
-                        context: context,
-                        api: widget.api,
-                        auth: widget.auth,
-                      ),
-                      icon: const Icon(Icons.playlist_add_rounded),
-                    ),
-                    if (_isMutating)
-                      const Padding(
-                        padding: EdgeInsets.only(right: 16),
-                        child: Center(
-                          child: SizedBox.square(
-                            dimension: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2.2),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_selectionMode)
+                          TextButton(
+                            onPressed: _exitSelectionMode,
+                            child: const Text('取消'),
+                          )
+                        else if (!_isSearching) ...[
+                          IconButton(
+                            tooltip: '搜索',
+                            onPressed: _toggleSearch,
+                            icon: const Icon(Icons.search_rounded),
                           ),
-                        ),
-                      )
-                    else if ((!_isAlbum && !_isInLibrary) ||
-                        (_isInLibrary && !_libraryPlaylist.isLikedPlaylist))
-                      IconButton(
-                        tooltip: '更多',
-                        onPressed: _showPlaylistActionSheet,
-                        icon: const Icon(Icons.more_vert_rounded),
-                      ),
-                  ] else
-                    IconButton(
-                      tooltip: '关闭搜索',
-                      onPressed: _toggleSearch,
-                      icon: const Icon(Icons.close_rounded),
+                          IconButton(
+                            tooltip: '分享',
+                            onPressed: _sharePlaylist,
+                            icon: const Icon(Icons.share_rounded),
+                          ),
+                          IconButton(
+                            tooltip: '导入歌单',
+                            onPressed: () => showImportPlaylistSheet(
+                              context: context,
+                              api: widget.api,
+                              auth: widget.auth,
+                            ),
+                            icon: const Icon(Icons.playlist_add_rounded),
+                          ),
+                          if (_isMutating)
+                            const Padding(
+                              padding: EdgeInsets.only(right: 16),
+                              child: Center(
+                                child: SizedBox.square(
+                                  dimension: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2.2,
+                                  ),
+                                ),
+                              ),
+                            )
+                          else if ((!_isAlbum && !_isInLibrary) ||
+                              (_isInLibrary &&
+                                  !_libraryPlaylist.isLikedPlaylist))
+                            IconButton(
+                              tooltip: '更多',
+                              onPressed: _showPlaylistActionSheet,
+                              icon: const Icon(Icons.more_vert_rounded),
+                            ),
+                        ] else
+                          IconButton(
+                            tooltip: '关闭搜索',
+                            onPressed: _toggleSearch,
+                            icon: const Icon(Icons.close_rounded),
+                          ),
+                      ],
                     ),
+                  ),
                 ],
                 flexibleSpace: _isSearching
                     ? null
@@ -1261,6 +1289,18 @@ class _SimilarPlaylistCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.md,
+        child: _buildSimilarPlaylistCardInner(context),
+      ),
+    );
+  }
+
+  Widget _buildSimilarPlaylistCardInner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return InkWell(
       onTap: onTap,
@@ -1777,6 +1817,18 @@ class _SongRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.md,
+        child: _buildSongRowInner(context),
+      ),
+    );
+  }
+
+  Widget _buildSongRowInner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
     // 歌曲行响应 player 重建，高频更新会触发 Windows AXTree 竞态崩溃
@@ -2066,6 +2118,18 @@ class _SortOptionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.md,
+        child: _buildSortOptionTileInner(context),
+      ),
+    );
+  }
+
+  Widget _buildSortOptionTileInner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return InkWell(
       onTap: onTap,

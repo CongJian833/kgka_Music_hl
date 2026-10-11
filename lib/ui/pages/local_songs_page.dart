@@ -1,4 +1,6 @@
 import 'dart:io';
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import '../design_tokens.dart';
 import '../adaptive_layout.dart';
@@ -7,6 +9,7 @@ import '../../controllers/local_music_controller.dart';
 import '../widgets/toast.dart';
 import '../widgets/artwork.dart';
 import '../widgets/now_playing_badge.dart';
+import '../widgets/window_title_bar.dart';
 
 class LocalSongsPage extends StatefulWidget {
   const LocalSongsPage({
@@ -30,6 +33,9 @@ class _LocalSongsPageState extends State<LocalSongsPage> {
   void initState() {
     super.initState();
     _searchController.addListener(_onSearchChanged);
+    // ====【修复/安卓冷启动卡顿】==== 扫描已改为惰性：进入本地音乐页时才触发，
+    // 不再在应用冷启动时白花约 1 秒（首次拉起 MediaStore provider）。
+    unawaited(widget.localMusic.ensureInitialized());
   }
 
   @override
@@ -209,40 +215,46 @@ class _LocalSongsPageState extends State<LocalSongsPage> {
       appBar: AppBar(
         title: const Text('本地音乐'),
         actions: [
-          AnimatedBuilder(
-            animation: widget.localMusic,
-            builder: (context, _) {
-              if (widget.localMusic.isScanning) {
-                return const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16),
-                  child: SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
+          Padding(
+            // Windows 上右侧为窗口控制按钮让出空间。
+            padding: EdgeInsets.only(
+              right: Platform.isWindows ? WindowTitleBar.controlAreaRight : 0,
+            ),
+            child: AnimatedBuilder(
+              animation: widget.localMusic,
+              builder: (context, _) {
+                if (widget.localMusic.isScanning) {
+                  return const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 16),
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  );
+                }
+                if (!Platform.isAndroid || !widget.localMusic.hasPermission) {
+                  return const SizedBox.shrink();
+                }
+                return Row(
+                  children: [
+                    IconButton(
+                      tooltip: '扫描目录设置',
+                      onPressed: _showFolderFilterSheet,
+                      icon: const Icon(Icons.rule_folder_rounded),
+                    ),
+                    IconButton(
+                      tooltip: '重新扫描',
+                      onPressed: () async {
+                        await widget.localMusic.scanLocalMusic();
+                        Toast.success('扫描完成');
+                      },
+                      icon: const Icon(Icons.refresh_rounded),
+                    ),
+                  ],
                 );
-              }
-              if (!Platform.isAndroid || !widget.localMusic.hasPermission) {
-                return const SizedBox.shrink();
-              }
-              return Row(
-                children: [
-                  IconButton(
-                    tooltip: '扫描目录设置',
-                    onPressed: _showFolderFilterSheet,
-                    icon: const Icon(Icons.rule_folder_rounded),
-                  ),
-                  IconButton(
-                    tooltip: '重新扫描',
-                    onPressed: () async {
-                      await widget.localMusic.scanLocalMusic();
-                      Toast.success('扫描完成');
-                    },
-                    icon: const Icon(Icons.refresh_rounded),
-                  ),
-                ],
-              );
-            },
+              },
+            ),
           ),
         ],
       ),

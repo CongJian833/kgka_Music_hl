@@ -3,7 +3,8 @@ import java.util.Properties
 
 plugins {
     id("com.android.application")
-    //id("kotlin-android")
+    // Flutter 3.32.8 的 Gradle 插件不会自动应用 KGP，需显式启用以编译 Kotlin 源码。
+    id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
@@ -24,12 +25,14 @@ fun hasReleaseSigning(): Boolean = keystorePropertiesFile.exists() &&
 
 android {
     namespace = "com.hoilai.mm.music"
-    compileSdk = 37
-    ndkVersion = flutter.ndkVersion
+    compileSdk = 36
+    // Flutter 3.32.8 默认要求 NDK 26.3，显式使用本地已安装的 28.2 避免重复下载。
+    ndkVersion = "28.2.13676358"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        isCoreLibraryDesugaringEnabled = true
     }
 
     signingConfigs {
@@ -48,6 +51,7 @@ android {
         applicationId = "com.hoilai.mm.music"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
+        // Flutter 3.32.8 官方默认 minSdk=21（Android 5.0），直接使用其值。
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
@@ -55,6 +59,8 @@ android {
         ndk {
             abiFilters.clear()
             abiFilters.add("arm64-v8a")
+            // 安卓 5.1 设备多为 32 位系统，必须包含 armeabi-v7a。
+            abiFilters.add("armeabi-v7a")
         }
     }
 
@@ -71,9 +77,14 @@ android {
             ndk {
                 abiFilters.clear()
                 abiFilters.add("arm64-v8a")
+                abiFilters.add("armeabi-v7a")
             }
         }
     }
+}
+
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 }
 kotlin {
     compilerOptions {

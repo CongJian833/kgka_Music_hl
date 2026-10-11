@@ -3,11 +3,13 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import '../widgets/app_feedback.dart';
 import '../widgets/app_section.dart';
+import '../widgets/window_title_bar.dart';
 import '../design_tokens.dart';
 
 import '../../config/app_config.dart';
 import '../../controllers/auth_controller.dart';
 import '../../controllers/player_controller.dart';
+import '../../services/main_thread_lag_monitor.dart';
 import '../../models/app_version.dart';
 import '../../models/music_models.dart';
 import '../../services/app_update_service.dart';
@@ -15,6 +17,8 @@ import '../../services/cache_service.dart';
 import '../../services/music_api.dart';
 import '../widgets/app_update_widgets.dart';
 import '../widgets/artwork.dart';
+import '../widgets/tv_focus.dart'; // ====【新增/TV 遥控器焦点】====
+import '../widgets/tv_controls.dart'; // ====【新增/Android TV 遥控器适配】====
 import '../widgets/now_playing_badge.dart';
 import '../widgets/song_action_sheets.dart';
 import '../widgets/toast.dart';
@@ -148,6 +152,7 @@ class _HomePageState extends State<HomePage> {
   /// 先从缓存显示（已在 initState/_tryRestoreFromCache 中完成），
   /// 然后后台请求最新数据，成功后更新 UI，失败则保持缓存数据。
   Future<void> _silentRefresh() async {
+    MainThreadLagMonitor.crumb('home:silentRefreshBegin');
     try {
       final results = await Future.wait([
         widget.api.dailyRecommend(),
@@ -183,6 +188,8 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<_HomeData> _load() async {
+    MainThreadLagMonitor.crumb('home:loadBegin');
+    final loadSw = Stopwatch()..start();
     final results = await Future.wait([
       widget.api.dailyRecommend(),
       widget.api.recommendedPlaylists(),
@@ -190,6 +197,8 @@ class _HomePageState extends State<HomePage> {
       widget.api.topSongs(),
       widget.api.topAlbums(pageSize: 10),
     ]);
+    MainThreadLagMonitor.record('home.apiWait', loadSw.elapsedMilliseconds);
+    final buildSw = Stopwatch()..start();
     final data = _HomeData(
       daily: results[0] as DailyRecommend,
       playlists: results[1] as List<PlaylistSummary>,
@@ -197,7 +206,10 @@ class _HomePageState extends State<HomePage> {
       topSongs: results[3] as List<Song>,
       topAlbums: results[4] as List<TopAlbumItem>,
     );
+    MainThreadLagMonitor.record('home.buildData', buildSw.elapsedMilliseconds);
     _cachedData = data;
+    MainThreadLagMonitor.crumb('home:cacheWriteBegin');
+    final cacheSw = Stopwatch()..start();
     await widget.cache.write('cache_home', {
       'daily': data.daily.toCache(),
       'playlists': data.playlists.map((p) => p.toCache()).toList(),
@@ -205,6 +217,7 @@ class _HomePageState extends State<HomePage> {
       'topSongs': data.topSongs.map((song) => song.toCache()).toList(),
       'topAlbums': data.topAlbums.map(_topAlbumToCache).toList(),
     });
+    MainThreadLagMonitor.record('home.cacheWrite', cacheSw.elapsedMilliseconds);
     _checkAndAutoPlay(data);
     return data;
   }
@@ -390,6 +403,16 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器适配】==== 页面级焦点作用域：
+    //   * 进入页面后焦点落到第一个可聚焦组件；
+    //   * 离开再回来恢复上次位置（debugLabel 作为记忆键）。
+    return TvFocusScope(
+      debugLabel: 'home',
+      child: _buildHomeInner(context),
+    );
+  }
+
+  Widget _buildHomeInner(BuildContext context) {
     return FutureBuilder<_HomeData>(
       future: _future,
       builder: (context, snapshot) {
@@ -536,6 +559,15 @@ class _RecommendHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【诊断/启动卡顿】==== 区块构建耗时：找出 2.2s 单帧花在哪个区块。
+    final diagSw = Stopwatch()..start();
+    final diagChild = _buildRecommendHeaderInner(context);
+    diagSw.stop();
+    MainThreadLagMonitor.record('home.build.RecommendHeader', diagSw.elapsedMilliseconds);
+    return diagChild;
+  }
+
+  Widget _buildRecommendHeaderInner(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final size = MediaQuery.sizeOf(context);
     final isLandscape = size.width > size.height;
@@ -567,8 +599,14 @@ class _RecommendHeader extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               if (!isCarMode) ...[
+                // Windows 上右侧为窗口控制按钮让出空间（仅顶部那一行）。
                 Padding(
-                  padding: const EdgeInsets.only(right: 18),
+                  padding: EdgeInsets.only(
+                    right: 18 +
+                        (Platform.isWindows
+                            ? WindowTitleBar.controlAreaRight
+                            : 0),
+                  ),
                   child: _TopTabs(
                     auth: auth,
                     index: sectionIndex,
@@ -884,6 +922,18 @@ class _FeatureCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发（左→右、上→下由几何遍历负责）。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.lg,
+        child: _buildFeatureCardInner(context),
+      ),
+    );
+  }
+
+  Widget _buildFeatureCardInner(BuildContext context) {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
@@ -1007,6 +1057,15 @@ class _SongSectionState extends State<_SongSection> {
 
   @override
   Widget build(BuildContext context) {
+    // ====【诊断/启动卡顿】==== 区块构建耗时：找出 2.2s 单帧花在哪个区块。
+    final diagSw = Stopwatch()..start();
+    final diagChild = _buildSongSectionInner(context);
+    diagSw.stop();
+    MainThreadLagMonitor.record('home.build.SongSection', diagSw.elapsedMilliseconds);
+    return diagChild;
+  }
+
+  Widget _buildSongSectionInner(BuildContext context) {
     if (widget.songs.isEmpty) {
       return const SizedBox.shrink();
     }
@@ -1176,7 +1235,15 @@ class _HomeSongRow extends StatelessWidget {
           final active =
               song.hash.isNotEmpty && player.currentSong?.hash == song.hash;
           final activeColor = colorScheme.primary;
-          return GestureDetector(
+          return TvFocusTarget(
+            onSelect: () => onPlay(song, queue),
+            // 行内还有"点赞/更多"按钮，保留子树焦点，行本身与按钮都可聚焦。
+            descendantsAreFocusable: true,
+            builder: (context, focused) => TvFocusHighlight(
+              focused: focused,
+              radius: AppRadius.lg,
+              scale: 1.0,
+              child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: () => onPlay(song, queue),
             child: AnimatedContainer(
@@ -1248,20 +1315,19 @@ class _HomeSongRow extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 10),
-                  IconButton(
-                    onPressed: onLikeTap,
-                    icon: Icon(
-                      isLiked
-                          ? Icons.favorite_rounded
-                          : Icons.favorite_border_rounded,
-                      color: isLiked ? Colors.redAccent : colorScheme.outline,
-                      size: 27,
-                    ),
-                    visualDensity: VisualDensity.compact,
+                  TvIconButton(
+                    onTap: onLikeTap,
+                    icon: isLiked
+                        ? Icons.favorite_rounded
+                        : Icons.favorite_border_rounded,
+                    color: isLiked ? Colors.redAccent : colorScheme.outline,
+                    iconSize: 26,
+                    radius: 10,
+                    padding: const EdgeInsets.all(6),
                   ),
-                  IconButton(
+                  TvIconButton(
                     tooltip: '更多',
-                    onPressed: () {
+                    onTap: () {
                       showSongActionSheet(
                         context: context,
                         song: song,
@@ -1307,13 +1373,18 @@ class _HomeSongRow extends StatelessWidget {
                         ],
                       );
                     },
-                    icon: const Icon(Icons.more_horiz_rounded),
-                    visualDensity: VisualDensity.compact,
+                    icon: Icons.more_horiz_rounded,
+                    iconSize: 24,
+                    radius: 10,
+                    padding: const EdgeInsets.all(6),
+                    color: colorScheme.onSurface,
                   ),
                 ],
               ),
             ),
-          );
+          ),
+        ),
+      );
         },
       ),
     );
@@ -1329,6 +1400,15 @@ class _TopSongRail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【诊断/启动卡顿】==== 区块构建耗时：找出 2.2s 单帧花在哪个区块。
+    final diagSw = Stopwatch()..start();
+    final diagChild = _buildTopSongRailInner(context);
+    diagSw.stop();
+    MainThreadLagMonitor.record('home.build.TopSongRail', diagSw.elapsedMilliseconds);
+    return diagChild;
+  }
+
+  Widget _buildTopSongRailInner(BuildContext context) {
     return AppHorizontalRail<Song>(
       title: '新歌速递',
       items: songs,
@@ -1351,6 +1431,18 @@ class _TopSongCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发（左→右、上→下由几何遍历负责）。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.md,
+        child: _buildTopSongCardInner(context),
+      ),
+    );
+  }
+
+  Widget _buildTopSongCardInner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return InkWell(
       onTap: onTap,
@@ -1393,6 +1485,15 @@ class _TopAlbumRail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【诊断/启动卡顿】==== 区块构建耗时：找出 2.2s 单帧花在哪个区块。
+    final diagSw = Stopwatch()..start();
+    final diagChild = _buildTopAlbumRailInner(context);
+    diagSw.stop();
+    MainThreadLagMonitor.record('home.build.TopAlbumRail', diagSw.elapsedMilliseconds);
+    return diagChild;
+  }
+
+  Widget _buildTopAlbumRailInner(BuildContext context) {
     if (albums.isEmpty) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.only(top: 20),
@@ -1434,6 +1535,18 @@ class _TopAlbumCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发（左→右、上→下由几何遍历负责）。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.md,
+        child: _buildTopAlbumCardInner(context),
+      ),
+    );
+  }
+
+  Widget _buildTopAlbumCardInner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return InkWell(
       onTap: onTap,
@@ -1486,6 +1599,15 @@ class _PlaylistRailState extends State<_PlaylistRail> {
 
   @override
   Widget build(BuildContext context) {
+    // ====【诊断/启动卡顿】==== 区块构建耗时：找出 2.2s 单帧花在哪个区块。
+    final diagSw = Stopwatch()..start();
+    final diagChild = _buildPlaylistRailInner(context);
+    diagSw.stop();
+    MainThreadLagMonitor.record('home.build.PlaylistRail', diagSw.elapsedMilliseconds);
+    return diagChild;
+  }
+
+  Widget _buildPlaylistRailInner(BuildContext context) {
     final playlists = widget.playlists;
     if (playlists.isEmpty) {
       return const SizedBox.shrink();
@@ -1583,6 +1705,18 @@ class _PlaylistCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发（左→右、上→下由几何遍历负责）。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.md,
+        child: _buildPlaylistCardInner(context),
+      ),
+    );
+  }
+
+  Widget _buildPlaylistCardInner(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final size = constraints.maxWidth.isInfinite ? 128.0 : constraints.maxWidth;
@@ -1719,6 +1853,15 @@ class _RadioSectionState extends State<_RadioSection> {
 
   @override
   Widget build(BuildContext context) {
+    // ====【诊断/启动卡顿】==== 区块构建耗时：找出 2.2s 单帧花在哪个区块。
+    final diagSw = Stopwatch()..start();
+    final diagChild = _buildRadioSectionInner(context);
+    diagSw.stop();
+    MainThreadLagMonitor.record('home.build.RadioSection', diagSw.elapsedMilliseconds);
+    return diagChild;
+  }
+
+  Widget _buildRadioSectionInner(BuildContext context) {
     final screenSize = MediaQuery.sizeOf(context);
     final isLandscape = screenSize.width > screenSize.height;
     // 电台双卡+网格布局是车机专属，普通横屏用原布局。
@@ -1910,6 +2053,18 @@ class _RadioHeroCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发（左→右、上→下由几何遍历负责）。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.lg,
+        child: _buildRadioHeroCardInner(context),
+      ),
+    );
+  }
+
+  Widget _buildRadioHeroCardInner(BuildContext context) {
     return AspectRatio(
       aspectRatio: 2.08,
       child: InkWell(
@@ -2073,6 +2228,18 @@ class _RadioStationCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发（左→右、上→下由几何遍历负责）。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.md,
+        child: _buildRadioStationCardInner(context),
+      ),
+    );
+  }
+
+  Widget _buildRadioStationCardInner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return SizedBox(
       width: 128,
@@ -2523,6 +2690,18 @@ class _PillCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器焦点】==== 可聚焦 + 高亮 + 确定键触发（左→右、上→下由几何遍历负责）。
+    return TvFocusTarget(
+      onSelect: onTap,
+      builder: (context, focused) => TvFocusHighlight(
+        focused: focused,
+        radius: AppRadius.lg,
+        child: _buildPillCardInner(context),
+      ),
+    );
+  }
+
+  Widget _buildPillCardInner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 

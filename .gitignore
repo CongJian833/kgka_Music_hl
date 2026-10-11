@@ -50,3 +50,16 @@ app.*.map.json
 key.properties
 
 .ace-tool/
+
+# ==== 本地环境 / 工具 / 构建产物（不纳入版本控制）====
+/jdk17-tmp/
+/jdk17.zip
+/cmdtools.zip
+/dist/
+/apk-analysis/
+/android/build/
+/installer/
+/backups/
+/.trae/
+/.loomy-attachments/
+/flutter_releases.json

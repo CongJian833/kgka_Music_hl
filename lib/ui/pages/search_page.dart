@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import '../design_tokens.dart';
+import '../widgets/tv_focus.dart'; // ====【新增/TV 遥控器焦点】====
 
 import '../../controllers/auth_controller.dart';
 import '../../controllers/player_controller.dart';
@@ -14,6 +16,7 @@ import '../widgets/mini_player.dart';
 import '../widgets/now_playing_badge.dart';
 import '../widgets/song_action_sheets.dart';
 import '../widgets/toast.dart';
+import '../widgets/window_title_bar.dart';
 import '../adaptive_layout.dart';
 import 'artist_detail_page.dart';
 import 'dart:math' as math;
@@ -257,6 +260,16 @@ class _SearchPageState extends State<SearchPage> {
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器适配】==== 页面级焦点作用域：
+    //   * 进入页面后焦点落到第一个可聚焦组件；
+    //   * 离开再回来恢复上次位置（debugLabel 作为记忆键）。
+    return TvFocusScope(
+      debugLabel: 'search',
+      child: _buildSearchInner(context),
+    );
+  }
+
+  Widget _buildSearchInner(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
     final isLandscape = size.width > size.height;
     final colorScheme = Theme.of(context).colorScheme;
@@ -270,7 +283,15 @@ class _SearchPageState extends State<SearchPage> {
             padding: const EdgeInsets.fromLTRB(24, 16, 24, 16),
             child: Column(
               children: [
-                _buildCarSearchHeader(context, colorScheme),
+                // Windows 上右侧为窗口控制按钮让出空间（仅顶部这一行搜索栏）。
+                Padding(
+                  padding: EdgeInsets.only(
+                    right: Platform.isWindows
+                        ? WindowTitleBar.controlAreaRight
+                        : 0,
+                  ),
+                  child: _buildCarSearchHeader(context, colorScheme),
+                ),
                 const SizedBox(height: 16),
                 Expanded(
                   child: AnimatedBuilder(
@@ -323,17 +344,28 @@ class _SearchPageState extends State<SearchPage> {
           ),
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: Text(
-              '取消',
-              style: TextStyle(
-                color: colorScheme.primary,
-                fontWeight: FontWeight.w700,
-              ),
+          Padding(
+            // Windows 上右侧为窗口控制按钮让出空间。
+            padding: EdgeInsets.only(
+              right: Platform.isWindows ? WindowTitleBar.controlAreaRight : 0,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: Text(
+                    '取消',
+                    style: TextStyle(
+                      color: colorScheme.primary,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 4),
+              ],
             ),
           ),
-          const SizedBox(width: 4),
         ],
       ),
       body: AdaptiveContentPadding(

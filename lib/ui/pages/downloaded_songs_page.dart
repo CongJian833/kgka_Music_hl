@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import '../widgets/tv_focus.dart'; // ====【新增/TV 遥控器焦点】====
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -49,6 +50,16 @@ class _DownloadedSongsPageState extends State<DownloadedSongsPage>
 
   @override
   Widget build(BuildContext context) {
+    // ====【新增/TV 遥控器适配】==== 页面级焦点作用域：
+    //   * 进入页面后焦点落到第一个可聚焦组件；
+    //   * 离开再回来恢复上次位置（debugLabel 作为记忆键）。
+    return TvFocusScope(
+      debugLabel: 'downloaded',
+      child: _buildDownloadedInner(context),
+    );
+  }
+
+  Widget _buildDownloadedInner(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('已下载'),

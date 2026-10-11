@@ -10,6 +10,7 @@ import '../../models/music_models.dart';
 import '../pages/player_page.dart';
 import 'artwork.dart';
 import 'toast.dart';
+import 'tv_focus.dart'; // ====【新增/Android TV 遥控器适配】====
 
 class MiniPlayer extends StatelessWidget {
   const MiniPlayer({super.key, required this.player, required this.auth});
@@ -136,6 +137,17 @@ class MiniPlayer extends StatelessWidget {
                                         ),
                                       ),
                                       IconButton(
+                                        tooltip: '上一首',
+                                        onPressed: player.isPreparing
+                                            ? null
+                                            : player.skipToPrevious,
+                                        icon: Icon(
+                                          Icons.skip_previous_rounded,
+                                          color: colorScheme.onSurface,
+                                          size: 30,
+                                        ),
+                                      ),
+                                      IconButton(
                                         tooltip: player.isPlaying ? '暂停' : '播放',
                                         onPressed: player.isPreparing
                                             ? null
@@ -144,6 +156,17 @@ class MiniPlayer extends StatelessWidget {
                                           player.isPlaying
                                               ? Icons.pause_rounded
                                               : Icons.play_arrow_rounded,
+                                          color: colorScheme.onSurface,
+                                          size: 30,
+                                        ),
+                                      ),
+                                      IconButton(
+                                        tooltip: '下一首',
+                                        onPressed: player.isPreparing
+                                            ? null
+                                            : player.skipToNext,
+                                        icon: Icon(
+                                          Icons.skip_next_rounded,
                                           color: colorScheme.onSurface,
                                           size: 30,
                                         ),
@@ -207,12 +230,15 @@ class MiniPlayer extends StatelessWidget {
       backgroundColor: Theme.of(context).colorScheme.surface,
       builder: (sheetContext) {
         final colorScheme = Theme.of(sheetContext).colorScheme;
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
+      return TvFocusScope(
+        restoreFocus: false,
+        debugLabel: 'miniQueueSheet',
+        child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Padding(
                   padding: const EdgeInsets.only(bottom: 12),
@@ -293,11 +319,11 @@ class MiniPlayer extends StatelessWidget {
                 ),
               ],
             ),
-          ),
-        );
-      },
-    );
-  }
+        ),
+      ));
+    },
+  );
+}
 
   /// 从队列中移除指定项（保留当前播放歌曲）。
   void _removeFromQueue(BuildContext sheetContext, int index) {

@@ -1,1 +1,12 @@
+analyzer:
+  exclude:
+    - build/**
+    - android/**
+    - ios/**
+    - web/**
+    - windows/**
+    - macos/**
+    - linux/**
+    # ====【备份管理】backups 为修改前快照（含旧 .dart 快照），不参与分析/构建 ====
+    - backups/**
 include: package:flutter_lints/flutter.yaml
